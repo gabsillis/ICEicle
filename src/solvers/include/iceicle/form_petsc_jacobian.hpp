@@ -203,7 +203,7 @@ namespace iceicle::solvers {
                             for(IDX ieqf = 0; ieqf < ncomp; ++ieqf){
                                 IDX irow = (imleft) ? uL.get_layout()[idoff, ieqf]
                                                     : uR.get_layout()[idoff, ieqf];
-                                jacL[irow, jcol] += (resp[idoff, ieqf] - res[idoff, ieqf]) / eps_scaled;
+                                jacR[irow, jcol] += (resp[idoff, ieqf] - res[idoff, ieqf]) / eps_scaled;
                             }
                         }
 
@@ -310,8 +310,8 @@ namespace iceicle::solvers {
             scatter_elspan(trace.elR.elidx, 1.0, resR, 1.0, res);
 
             // get the global index to the start of the contiguous component x dof range for L/R elem
-            std::size_t glob_index_L = u.get_layout()[trace.elL.elidx, 0, 0];
-            std::size_t glob_index_R = u.get_layout()[trace.elR.elidx, 0, 0];
+            std::size_t glob_index_L = u.get_pindex(trace.elL.elidx, 0, 0);
+            std::size_t glob_index_R = u.get_pindex(trace.elR.elidx, 0, 0);
 
             // set up the perturbation amount scaled by unperturbed residual 
             T eps_scaled = scale_fd_epsilon(epsilon, std::max(resL.vector_norm(), resR.vector_norm()));
@@ -358,10 +358,8 @@ namespace iceicle::solvers {
             }
             // send the jacobians to the petsc matrix 
             // (note global indices uL, then resL/resR)
-            petsc::add_to_petsc_mat(jac, proc_range_beg + glob_index_L, 
-                    proc_range_beg + glob_index_L, jacL);
-            petsc::add_to_petsc_mat(jac, proc_range_beg + glob_index_R, 
-                    proc_range_beg + glob_index_L, jacR);
+            petsc::add_to_petsc_mat(jac, glob_index_L, glob_index_L, jacL);
+            petsc::add_to_petsc_mat(jac, glob_index_R, glob_index_L, jacR);
             
             // perturb and form jacobian wrt uR
             // make compact jacobian views
@@ -404,10 +402,8 @@ namespace iceicle::solvers {
                 }
             }
             // send the jacobians to the petsc matrix 
-            petsc::add_to_petsc_mat(jac, proc_range_beg + glob_index_L, 
-                    proc_range_beg + glob_index_R, jacL);
-            petsc::add_to_petsc_mat(jac, proc_range_beg + glob_index_R, 
-                    proc_range_beg + glob_index_R, jacR);
+            petsc::add_to_petsc_mat(jac, glob_index_L, glob_index_R, jacL);
+            petsc::add_to_petsc_mat(jac, glob_index_R, glob_index_R, jacR);
         }
 
         // domain integral 

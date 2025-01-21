@@ -44,6 +44,10 @@ namespace iceicle {
             std::vector<IDX> connected_elements;
             connected_elements.reserve(max_faces);
 
+            // don't make interior faces with ghost elements 
+            if(ielem > mesh.nelem_owned())
+                continue;
+
             // loop through elements that share a node
             for(IDX inode : mesh.conn_el.rowspan(ielem)){
                 for(auto jelem_iter = std::lower_bound(elsup[inode].begin(), elsup[inode].end(), ielem);
@@ -53,6 +57,10 @@ namespace iceicle {
                     // skip the cases that would lead to duplicate or boundary faces
                     if( ielem == jelem || std::ranges::find(connected_elements, jelem) != std::ranges::end(connected_elements))
                         continue; 
+
+                    // don't make interior faces with ghost elements 
+                    if(jelem > mesh.nelem_owned())
+                        continue;
 
                     // try making the face that is the intersection of the two elements
                     auto face_opt = make_face(ielem, jelem, 

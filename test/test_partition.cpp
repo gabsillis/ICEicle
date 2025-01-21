@@ -1,4 +1,5 @@
 #include "iceicle/element/reference_element.hpp"
+#include "iceicle/geometry/face.hpp"
 #include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/tmp_utils.hpp"
 #include "iceicle/disc/l2_error.hpp"
@@ -610,7 +611,7 @@ TEST(test_petsc_jacobian, test_trace_integral){
     static constexpr int ndim = 2;
     static constexpr int pn_order = 1;
     int nelemx = 11;
-    int nelemy = 7;
+    int nelemy = 13;
 
     // set up mesh and fespace
     AbstractMesh mesh{partition_mesh(AbstractMesh<T, IDX, ndim>{
@@ -734,6 +735,50 @@ TEST(test_petsc_jacobian, test_trace_integral){
                         IDX jjac = u.get_pindex(trace.elR.elidx, k, l);
                         // subtract out expected jacobian contribution
                         MatSetValue(jac, ijac, jjac, -jac_val_expected, ADD_VALUES);
+                    }
+                }
+            }
+        }
+    }
+
+    // consider the ghost element faces 
+    // (would be interior in non-partitioned mesh)
+    for(const TraceSpace<T, IDX , 2>& trace : fespace.get_boundary_traces()){
+        if(trace.face->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM){
+
+            auto [jrank, imleft] = decode_mpi_bcflag(trace.face->bcflag);
+            auto centroidL = trace.elL.centroid();
+            auto centroidR = trace.elR.centroid();
+            T distL = std::sqrt(std::pow(centroidL[0], 2) + std::pow(centroidL[1], 2));
+            T distR = std::sqrt(std::pow(centroidR[0], 2) + std::pow(centroidR[1], 2));
+
+            auto res_elidx = (imleft) ? trace.elL.elidx : trace.elR.elidx;
+            // jac of residual L
+            for(int i = 0; i < trace.elL.nbasis(); ++i){
+                for(int j = 0; j < neq; ++j){
+
+                    // jac wrt left sol
+                    for(int k = 0; k < trace.elL.nbasis(); ++k){
+                        for(int l = 0; l < neq; ++l){
+
+                            T jac_val_expected = distL * (i * neq + j) * (k * neq + l);
+                            IDX ijac = res.get_pindex(res_elidx, i, j);
+                            IDX jjac = u.get_pindex(trace.elL.elidx, k, l);
+                            // subtract out expected jacobian contribution
+                            MatSetValue(jac, ijac, jjac, -jac_val_expected, ADD_VALUES);
+                        }
+                    }
+
+                    // jac wrt rightsol
+                    for(int k = 0; k < trace.elR.nbasis(); ++k){
+                        for(int l = 0; l < neq; ++l){
+
+                            T jac_val_expected = distR * (i * neq + j) * (k * neq + l);
+                            IDX ijac = res.get_pindex(res_elidx, i, j);
+                            IDX jjac = u.get_pindex(trace.elR.elidx, k, l);
+                            // subtract out expected jacobian contribution
+                            MatSetValue(jac, ijac, jjac, -jac_val_expected, ADD_VALUES);
+                        }
                     }
                 }
             }
