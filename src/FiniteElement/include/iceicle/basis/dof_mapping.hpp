@@ -5,7 +5,6 @@
 #include "iceicle/fe_definitions.hpp"
 #include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/tmp_utils.hpp"
-#include <mpi.h>
 #include <numeric>
 #include <unordered_map>
 #include <type_traits>

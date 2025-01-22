@@ -257,7 +257,7 @@ namespace iceicle {
         // reserve data
         std::vector<T> feval(fedata.nv());
         std::vector<T> u(fedata.nv());
-        std::vector<T> bi_data(fespace.dg_map.max_el_size_reqirement(1));
+        std::vector<T> bi_data(fespace.dofs.max_el_size_reqirement(1));
 
         std::vector<T> max_error(fedata.nv());
 
@@ -333,7 +333,7 @@ namespace iceicle {
 
         // preallocate storage for compact views of u 
         const std::size_t max_local_size =
-            fespace.dg_map.max_el_size_reqirement(DiscType::nv_comp);
+            fespace.dofs.max_el_size_reqirement(DiscType::nv_comp);
         std::vector<T> uL_storage(max_local_size);
         std::vector<T> uR_storage(max_local_size);
         std::vector<T> res_storage{};

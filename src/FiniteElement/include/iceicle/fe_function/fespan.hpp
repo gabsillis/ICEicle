@@ -76,10 +76,10 @@ namespace iceicle {
             using value_type = T;
             using layout_type = LayoutPolicy;
             using accessor_type = AccessorPolicy;
-            using pointer = typename std::conditional<LayoutPolicy::read_only(), 
+            using pointer = typename std::conditional<LayoutPolicy::includes_ghost(), 
                   const typename AccessorPolicy::data_handle_type,
                   typename AccessorPolicy::data_handle_type>::type;
-            using reference = typename std::conditional<LayoutPolicy::read_only(), 
+            using reference = typename std::conditional<LayoutPolicy::includes_ghost(), 
                   const typename AccessorPolicy::reference,
                   typename AccessorPolicy::reference>::type;
             using index_type = LayoutPolicy::index_type;
@@ -162,6 +162,14 @@ namespace iceicle {
 
             /** @brief get the static vector extent */
             [[nodiscard]] inline static constexpr std::size_t static_extent() noexcept { return LayoutPolicy::static_extent(); }
+
+            // ====================
+            // = Property Queries =
+            // ====================
+            [[nodiscard]] inline static constexpr 
+            bool includes_ghost_elements(){
+                return LayoutPolicy::includes_ghost();
+            }
 
             // ====================
             // = Index Operations =
@@ -380,7 +388,7 @@ namespace iceicle {
              * @return reference to this
              */
             constexpr fespan<T, LayoutPolicy, AccessorPolicy> &operator=( T value )
-            requires(!LayoutPolicy::read_only())
+            requires(!LayoutPolicy::includes_ghost())
             {
                 for(int i = 0; i < size(); ++i){
                     _ptr[i] = value;

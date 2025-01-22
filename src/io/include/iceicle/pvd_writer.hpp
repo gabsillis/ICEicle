@@ -324,8 +324,8 @@ namespace iceicle::io {
                 std::ranges::fill(trace_storage, 0.0);
 
                 // storage for element data
-                std::vector<T> el_data(fespace.dg_map.max_el_size_reqirement(disc_t::nv_comp));
-                std::vector<T> res_data(fespace.dg_map.max_el_size_reqirement(disc_t::nv_comp));
+                std::vector<T> el_data(fespace.dofs.max_el_size_reqirement(disc_t::nv_comp));
+                std::vector<T> res_data(fespace.dofs.max_el_size_reqirement(disc_t::nv_comp));
                 std::array<T, disc_t::nv_comp> res_poin{}; // residuals at the point
 
                 // === domain integral ===
@@ -368,10 +368,10 @@ namespace iceicle::io {
                 }
 
                 // === interior faces ===
-                std::vector<T> uL_data(fespace.dg_map.max_el_size_reqirement(disc_t::nv_comp));
-                std::vector<T> uR_data(fespace.dg_map.max_el_size_reqirement(disc_t::nv_comp));
-                std::vector<T> resL_data(fespace.dg_map.max_el_size_reqirement(disc_t::nv_comp));
-                std::vector<T> resR_data(fespace.dg_map.max_el_size_reqirement(disc_t::nv_comp));
+                std::vector<T> uL_data(fespace.dofs.max_el_size_reqirement(disc_t::nv_comp));
+                std::vector<T> uR_data(fespace.dofs.max_el_size_reqirement(disc_t::nv_comp));
+                std::vector<T> resL_data(fespace.dofs.max_el_size_reqirement(disc_t::nv_comp));
+                std::vector<T> resR_data(fespace.dofs.max_el_size_reqirement(disc_t::nv_comp));
                 for(const auto& trace : fespace.get_interior_traces()) {
                     // compact data views 
                     dofspan uL{uL_data.data(), fedata.create_element_layout(trace.elL.elidx)};

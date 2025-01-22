@@ -487,7 +487,7 @@ namespace iceicle {
         : meshptr(meshptr), elements{}, dofs{meshptr->conn_el}, dof_partitioning{meshptr->node_partitioning}{
             
             // Generate the Finite Elements
-            elements.reserve(meshptr->nelem());
+            all_elements.reserve(meshptr->nelem());
             for(ElementTransformation<T, IDX, ndim>* geo_trans : meshptr->el_transformations){
                 // create the Element Domain type key
                 FETypeKey fe_key = {
@@ -686,7 +686,7 @@ namespace iceicle {
                     out << "L2" << std::endl;
                     out << "ndof: " << ndof() << std::endl;
                     break;
-                case l2_conformity(ndim):
+                case h1_conformity(ndim):
                     out << "Space Type: ";
                     out << "H1 (isoparametric)" << std::endl;
                     out << "ndof: " << ndof() << std::endl;

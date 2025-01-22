@@ -69,7 +69,7 @@ namespace iceicle::io {
             WriterT _writer;
 
             /// @brief construct from a writer 
-            WriterModel(WriterT writer) : _writer{std::move(writer)}{} ;
+            WriterModel(WriterT writer) : _writer{std::move(writer)}{}
 
             /// @brief write to file 
             /// @param itime the time index 
@@ -83,6 +83,7 @@ namespace iceicle::io {
                 impl::rename_collection(_writer, new_name);
             }
 
+            /// @brief copy the model to a new unique_ptr
             auto clone() const -> std::unique_ptr<WriterConcept> override {
                 return std::make_unique<WriterModel>(*this);
             }

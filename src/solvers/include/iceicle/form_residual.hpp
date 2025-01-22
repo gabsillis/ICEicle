@@ -73,7 +73,10 @@ namespace iceicle::solvers {
         fespan<T, resLayoutPolicy> res,
         mpi::communicator_type comm
     )
-    requires specifies_ncomp<disc_class>
+    requires (
+            specifies_ncomp<disc_class>
+            && !decltype(res)::includes_ghost_elements()
+    )
     {
         using Element = FiniteElement<T, IDX, ndim>;
         using Trace = TraceSpace<T, IDX, ndim>;

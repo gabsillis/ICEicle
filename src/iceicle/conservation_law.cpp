@@ -91,7 +91,7 @@ void initialize_and_solve(
   // ==================================
   constexpr int neq =
       std::remove_reference_t<decltype(conservation_law)>::nv_comp;
-  fe_layout_right u_layout{fespace.dg_map, to_size<neq>{}};
+  fe_layout_right u_layout{fespace, to_size<neq>{}, std::true_type{}};
   std::vector<T> u_data(u_layout.size());
   fespan u{u_data.data(), u_layout};
   initialize_solution_lua(config_tbl, fespace, u);

@@ -213,7 +213,7 @@ namespace iceicle {
          * requires explicit communication
          */
         [[nodiscard]] inline static constexpr
-        auto read_only() noexcept
+        auto includes_ghost() noexcept
         -> bool 
         { return include_ghost; }
 

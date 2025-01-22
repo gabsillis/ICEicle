@@ -211,7 +211,7 @@ public:
         fespan res1{res1_data.data(), exclude_ghost(u.get_layout())};
         fespan res2{res2_data.data(), exclude_ghost(u.get_layout())};
         fespan res3{res3_data.data(), exclude_ghost(u.get_layout())};
-        fespan u_old{u_stage_data.data(), exclude_ghost(u.get_layout())};
+        fespan u_old{u_stage_data.data(), u.get_layout()};
 
 
         copy_fespan(u, u_old);
