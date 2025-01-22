@@ -242,7 +242,7 @@ namespace iceicle::io {
         }
     }
 
-    template<typename T, typename IDX, int ndim>
+    template<typename T, typename IDX, int ndim, int conformity>
     class PVDWriter{
 
         /**
@@ -251,7 +251,7 @@ namespace iceicle::io {
         */
         struct writeable_field {
             /// @brief adds the xml DataArray tags and data to a given vtu file 
-            virtual void write_data(std::ofstream &vtu_file, FESpace<T, IDX, ndim> &fespace) const = 0;
+            virtual void write_data(std::ofstream &vtu_file, FESpace<T, IDX, ndim, conformity> &fespace) const = 0;
 
             /// @brief if this data is in dg format and requires duplicated mesh nodes
             virtual auto is_dg_format() const -> bool { return true; }
@@ -297,7 +297,7 @@ namespace iceicle::io {
             : fedata{fedata}, residual_names{residual_names}, disc{disc}
             {}
 
-            void write_data(std::ofstream &vtu_file, FESpace<T, IDX, ndim>& fespace) const override 
+            void write_data(std::ofstream &vtu_file, FESpace<T, IDX, ndim, conformity>& fespace) const override 
             {
                 using namespace impl;
                 using Element = FiniteElement<T, IDX, ndim>;
@@ -604,7 +604,7 @@ namespace iceicle::io {
             }
 
             /// @brief adds the xml DataArray tags and data to a given vtu file 
-            void write_data(std::ofstream &vtu_file, FESpace<T, IDX, ndim> &fespace) const override
+            void write_data(std::ofstream &vtu_file, FESpace<T, IDX, ndim, conformity> &fespace) const override
             {
                 using namespace impl;
                 using Element = FiniteElement<T, IDX, ndim>;
@@ -746,7 +746,7 @@ namespace iceicle::io {
             MDGVectorDataField(dofspan<value_type, LayoutPolicy, AccessorPolicy> mdgdata, std::string field_name)
             : mdgdata(mdgdata), field_name(field_name){}
 
-            void write_data(std::ofstream &vtu_file, FESpace<T, IDX, ndim>& fespace) const override {
+            void write_data(std::ofstream &vtu_file, FESpace<T, IDX, ndim, conformity>& fespace) const override {
                 using namespace impl;
                 const nodeset_dof_map<index_type>& nodeset = mdgdata.get_layout().nodeset;
 
@@ -786,7 +786,7 @@ namespace iceicle::io {
         private:
 
         AbstractMesh<T, IDX, ndim> *meshptr = nullptr;
-        FESpace<T, IDX, ndim> *fespace_ptr = nullptr;
+        FESpace<T, IDX, ndim, conformity> *fespace_ptr = nullptr;
         std::vector<std::unique_ptr<writeable_field>> fields;
 
         // @brief callback function for when no derived fields are used
@@ -811,7 +811,7 @@ namespace iceicle::io {
             data_directory /= "iceicle_data";
         }
 
-        PVDWriter(const PVDWriter<T, IDX, ndim>& other)
+        PVDWriter(const PVDWriter<T, IDX, ndim, conformity>& other)
             : meshptr(other.meshptr), fespace_ptr(other.fespace_ptr), fields{}, print_precision(other.print_precision),
               collection_name(other.collection_name), data_directory(other.data_directory)
         {
@@ -820,7 +820,7 @@ namespace iceicle::io {
             }
         }
 
-        PVDWriter(PVDWriter<T, IDX, ndim>&& other) = default;
+        PVDWriter(PVDWriter<T, IDX, ndim, conformity>&& other) = default;
               
 
         void register_mesh(AbstractMesh<T, IDX, ndim> *newptr){
@@ -829,7 +829,7 @@ namespace iceicle::io {
 
         /// @brief register an fespace to this writer 
         /// will overwrite the registered mesh to the one in the fespace
-        void register_fespace(FESpace<T, IDX, ndim> &fespace){
+        void register_fespace(FESpace<T, IDX, ndim, conformity> &fespace){
             fespace_ptr = &fespace;
             meshptr = fespace.meshptr;
         }

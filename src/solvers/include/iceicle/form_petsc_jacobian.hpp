@@ -9,6 +9,7 @@
 #include "iceicle/fe_function/component_span.hpp"
 #include "iceicle/form_residual.hpp"
 #include "iceicle/geometry/face.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/petsc_interface.hpp"
 #include "iceicle/fd_utils.hpp"
 #include <cmath>
@@ -60,9 +61,12 @@ namespace iceicle::solvers {
         fespan<T, uLayoutPolicy, uAccessorPolicy> u,
         fespan<T, resLayoutPolicy> res,
         Mat jac,
-        T epsilon = std::sqrt(std::numeric_limits<T>::epsilon()),
-        MPI_Comm comm = MPI_COMM_WORLD 
-    ) {
+        mpi::communicator_type comm,
+        T epsilon = std::sqrt(std::numeric_limits<T>::epsilon())
+    ) requires(
+        specifies_ncomp<disc_class>
+        && !decltype(res)::includes_ghost_elements()) 
+    {
 
         using Element = FiniteElement<T, IDX, ndim>;
         using Trace = TraceSpace<T, IDX, ndim>;
@@ -1181,6 +1185,7 @@ template<
         geospan auto x,
         Vec res,
         Mat jac,
+        mpi::communicator_type comm,
         T epsilon = std::sqrt(std::numeric_limits<T>::epsilon())
     ) -> void 
     {
@@ -1196,12 +1201,12 @@ template<
         std::copy_n(u.data(), u.size(), ufull.data());
         std::copy_n(x.data(), x.size(), ufull.data() + u.size());
 
-        form_residual(fespace, disc, geo_map, std::span{ufull}, std::span{res_span});
+        form_residual(fespace, disc, geo_map, std::span{ufull}, std::span{res_span}, comm);
 
         for(IDX jdof = 0; jdof < ufull.size(); ++jdof) {
             T uold = ufull[jdof];
             ufull[jdof] += epsilon;
-            form_residual(fespace, disc, geo_map, std::span{ufull}, std::span{resp_data});
+            form_residual(fespace, disc, geo_map, std::span{ufull}, std::span{resp_data}, comm);
 
             for(IDX idof = 0; idof < res_span.size(); ++idof){
                 T fd_val = (resp_data[idof] - res_span[idof]) / epsilon;

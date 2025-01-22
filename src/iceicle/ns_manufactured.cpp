@@ -273,13 +273,13 @@ int main(int argc, char *argv[]) {
   // ==============================
   // = Initialize Solution Vector =
   // ==============================
-  fe_layout_right u_layout{fespace.dg_map, to_size<neq>{}};
+  fe_layout_right u_layout{fespace, to_size<neq>{}, std::true_type{}};
   std::vector<T> u_data(u_layout.size());
   fespan u{u_data.data(), u_layout};
   projection_initialization(fespace, std::function{initial_condition}, tmp::compile_int<neq>{}, u);
   // projection_initialization(fespace, std::function{exact}, tmp::compile_int<neq>{}, u);
 
-  io::PVDWriter<T, IDX, ndim> pvd_writer{};
+  io::PVDWriter<T, IDX, ndim, l2_conformity(ndim)> pvd_writer{};
   pvd_writer.register_fespace(fespace);
   pvd_writer.register_fields(u, conservation_law.field_names);
   pvd_writer.collection_name = "initial_condition";

@@ -12,28 +12,28 @@ namespace iceicle::io {
 
     /// @brief external function interface for type erasure to write a file 
     /// writes the file with the given time index and time values 
-    template<class T, class IDX, int ndim>
-    auto write_file(DatWriter<T, IDX, ndim>& writer, int itime, T time) -> void {
+    template<class T, class IDX, int ndim, int conformity>
+    auto write_file(DatWriter<T, IDX, ndim, conformity>& writer, int itime, T time) -> void {
         writer.write_dat(itime, time);
     }
 
     /// @brief external function interface for type erasure to write a file 
     /// writes the file with the given time index and time values 
-    template<class T, class IDX, int ndim>
-    auto write_file(PVDWriter<T, IDX, ndim>& writer, int itime, T time) -> void {
+    template<class T, class IDX, int ndim, int conformity>
+    auto write_file(PVDWriter<T, IDX, ndim, conformity>& writer, int itime, T time) -> void {
         writer.write_vtu(itime, time);
     }
 
     namespace impl {
         /// @brief external function interface for type erasure to rename the collection
-        template<class T, class IDX, int ndim>
-        auto rename_collection(DatWriter<T, IDX, ndim>& writer, std::string_view new_name)-> void {
+        template<class T, class IDX, int ndim, int conformity>
+        auto rename_collection(DatWriter<T, IDX, ndim, conformity>& writer, std::string_view new_name)-> void {
             writer.collection_name = new_name;
         }
 
         /// @brief external function interface for type erasure to rename the collection
-        template<class T, class IDX, int ndim>
-        auto rename_collection(PVDWriter<T, IDX, ndim>& writer, std::string_view new_name) -> void {
+        template<class T, class IDX, int ndim, int conformity>
+        auto rename_collection(PVDWriter<T, IDX, ndim, conformity>& writer, std::string_view new_name) -> void {
             writer.collection_name = new_name;
         }
     }

@@ -11,6 +11,7 @@
 #include <petscmat.h>
 #include <petscsys.h>
 #include "iceicle/form_residual.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/petsc_interface.hpp"
 #include "iceicle/fe_function/geo_layouts.hpp"
 #include "iceicle/fe_function/layout_right.hpp"
@@ -60,7 +61,7 @@ namespace iceicle::solvers {
             Vec res = ctx->res;
 
             // create all the layouts
-            fe_layout_right dg_layout{fespace.dg_map, tmp::to_size<disc_class::nv_comp>()};
+            fe_layout_right u_layout{exclude_ghost(u.get_layout())};
             geo_data_layout x_layout{geo_map};
             ic_residual_layout<T, IDX, ndim, disc_class::nv_comp> ic_layout{geo_map};
 
@@ -70,20 +71,20 @@ namespace iceicle::solvers {
             extract_geospan(*(fespace.meshptr), x);
 
             // setup peturbed residuals 
-            std::vector<T> resp(dg_layout.size() + ic_layout.size());
-            fespan res_dg{resp, dg_layout};
-            dofspan res_mdg{std::span{resp.begin() + dg_layout.size(), resp.end()}, ic_layout};
+            std::vector<T> resp(u_layout.owned_size(mpi::comm_world) + ic_layout.size());
+            fespan res_dg{resp, exclude_ghost(u_layout)};
+            dofspan res_mdg{std::span{resp.begin() + u_layout.owned_size(mpi::comm_world), resp.end()}, ic_layout};
 
             // perform the peturbation
             std::vector<T> xdata_peturb = xdata;
-            std::vector<T> udata_peturb(dg_layout.size());
-            fespan up{udata_peturb, dg_layout};
+            std::vector<T> udata_peturb(u_layout.size());
+            fespan up{udata_peturb, u_layout};
             copy_fespan(u, up);
             component_span xp{xdata_peturb, x_layout};
             {
                 petsc::VecSpan pview{p};
-                fespan du{pview, dg_layout};
-                component_span dx{pview.data() + dg_layout.size(), x_layout};
+                fespan du{pview, u_layout};
+                component_span dx{pview.data() + u_layout.size(), x_layout};
                 axpy(epsilon, du, up);
                 axpy(epsilon, dx, xp);
             }
@@ -93,7 +94,7 @@ namespace iceicle::solvers {
             update_mesh(xp, *(fespace.meshptr));
 
             // form the peturbed residual
-            form_residual(fespace, disc, up, res_dg);
+            form_residual(fespace, disc, up, res_dg, mpi::comm_world);
             form_mdg_residual(fespace, disc, up, geo_map, res_mdg);
 
             // directional derivative
@@ -201,18 +202,19 @@ namespace iceicle::solvers {
             static constexpr int neq = disc_class::nv_comp;
 
             // define data layouts
-            fe_layout_right u_layout{fespace.dg_map, std::integral_constant<std::size_t, neq>{}};
+            fe_layout_right u_layout{u.get_layout()};
+            fe_layout_right res_layout{exclude_ghost(u_layout)};
             geo_data_layout geo_layout{geo_map};
             ic_residual_layout<T, IDX, ndim, neq> ic_layout{geo_map};
 
             // setup petsc matrix and residual
             Vec r, du;
             VecCreate(PETSC_COMM_WORLD, &r);
-            VecSetSizes(r, u_layout.size() + ic_layout.size(), PETSC_DETERMINE);
+            VecSetSizes(r, res_layout.owned_size(mpi::comm_world) + ic_layout.size(), PETSC_DETERMINE);
             VecSetFromOptions(r);
 
             VecCreate(PETSC_COMM_WORLD, &du);
-            VecSetSizes(du, u_layout.size() + geo_layout.size(), PETSC_DETERMINE);
+            VecSetSizes(du, u.owned_size(mpi::comm_world) + geo_layout.size(), PETSC_DETERMINE);
             VecSetFromOptions(du);
 
             Mat J;
@@ -225,7 +227,8 @@ namespace iceicle::solvers {
             };
 
             MatCreate(PETSC_COMM_WORLD, &J);
-            MatSetSizes(J, u_layout.size() + ic_layout.size(), u_layout.size() + geo_layout.size(),
+            MatSetSizes(J, u.owned_size(mpi::comm_world) + ic_layout.size(),
+                    res_layout.owned_size(mpi::comm_world) + geo_layout.size(),
                     PETSC_DETERMINE, PETSC_DETERMINE);
             MatSetType(J, MATSHELL);
             MatSetUp(J);
@@ -245,10 +248,10 @@ namespace iceicle::solvers {
 
             { // get the initial residual 
                 petsc::VecSpan resview{r};
-                fespan res_pde{resview, u_layout};
+                fespan res_pde{resview, res_layout};
                 dofspan res_mdg{resview.data() + u_layout.size(), ic_layout};
 
-                form_residual(fespace, disc, u, res_pde);
+                form_residual(fespace, disc, u, res_pde, mpi::comm_world);
                 form_mdg_residual(fespace, disc, u, geo_map, res_mdg);
             }
 
@@ -286,7 +289,7 @@ namespace iceicle::solvers {
 
                         // working array for linesearch residuals
                         std::vector<T> r_work_storage(u.size());
-                        fespan res_work{r_work_storage.data(), u.get_layout()};
+                        fespan res_work{r_work_storage.data(), res_layout};
 
                         std::vector<T> r_mdg_work_storage(ic_layout.size());
                         dofspan mdg_res{r_mdg_work_storage, ic_layout};
@@ -304,7 +307,7 @@ namespace iceicle::solvers {
                         update_mesh(x, *(fespace.meshptr));
 
                         // === Get the residuals ===
-                        form_residual(fespace, disc, u_step, res_work);
+                        form_residual(fespace, disc, u_step, res_work, mpi::comm_world);
                         form_mdg_residual(fespace, disc, u_step, geo_map, mdg_res);
                         T rnorm = res_work.vector_norm() + mdg_res.vector_norm();
                         if(!std::isfinite(rnorm)) return 1e100;
@@ -325,10 +328,10 @@ namespace iceicle::solvers {
 
                 { // get the updated residual 
                     petsc::VecSpan resview{r};
-                    fespan res_pde{resview, u_layout};
+                    fespan res_pde{resview, res_layout};
                     dofspan res_mdg{resview.data() + u_layout.size(), ic_layout};
 
-                    form_residual(fespace, disc, u, res_pde);
+                    form_residual(fespace, disc, u, res_pde, mpi::comm_world);
                     form_mdg_residual(fespace, disc, u, geo_map, res_mdg);
                 }
 

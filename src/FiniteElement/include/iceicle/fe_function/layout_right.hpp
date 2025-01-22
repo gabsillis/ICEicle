@@ -264,6 +264,24 @@ namespace iceicle {
         -> size_type 
         { return ndof() * nv(); }
 
+        /// @brief get the number of data entries (vector components)
+        /// owned by this process
+        [[nodiscard]] inline constexpr auto owned_size(mpi::communicator_type comm)
+        -> size_type 
+        { return dof_partitioning.owned_range_size(mpi::rank(comm)) * nv(); }
+
+        /// @brief get the number of degrees of freedom accross all parallel ranks 
+        [[nodiscard]] inline constexpr 
+        auto par_ndof() const noexcept 
+        -> size_type 
+        { return dof_partitioning.size(); }
+
+        /// @brief get the number of data entries accross all parallel ranks 
+        [[nodiscard]] inline constexpr 
+        auto par_size() const noexcept 
+        -> size_type 
+        { return dof_partitioning.size() * nv(); }
+
         // ============
         // = Indexing =
         // ============

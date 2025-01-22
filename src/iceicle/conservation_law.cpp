@@ -73,9 +73,9 @@ public:
   }
 };
 
-template <class T, class IDX, int ndim, class pflux, class cflux, class dflux>
+template <class T, class IDX, int ndim, int conformity, class pflux, class cflux, class dflux>
 void initialize_and_solve(
-    sol::table config_tbl, FESpace<T, IDX, ndim> &fespace,
+    sol::table config_tbl, FESpace<T, IDX, ndim, conformity> &fespace,
     ConservationLawDDG<T, ndim, pflux, cflux, dflux> &conservation_law) {
 
   // ==============================
@@ -100,13 +100,13 @@ void initialize_and_solve(
   // = Output the Initial Solution =
   // ===============================
   if constexpr(ndim == 1){
-    io::DatWriter<T, IDX, ndim> dat_writer{fespace};
+    io::DatWriter<T, IDX, ndim, conformity> dat_writer{fespace};
     dat_writer.register_fields(u, conservation_law.field_names);
     dat_writer.collection_name = "initial_condition";
     dat_writer.write_dat(0, 0.0);
   }
   if constexpr (ndim == 2 || ndim == 3) {
-    io::PVDWriter<T, IDX, ndim> pvd_writer{};
+    io::PVDWriter<T, IDX, ndim, conformity> pvd_writer{};
     pvd_writer.register_fespace(fespace);
     pvd_writer.register_fields(u, conservation_law.field_names);
     pvd_writer.collection_name = "initial_condition";

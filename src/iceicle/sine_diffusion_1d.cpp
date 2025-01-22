@@ -6,6 +6,7 @@
 #include "iceicle/disc/conservation_law.hpp"
 #include "iceicle/element/reference_element.hpp"
 #include "iceicle/explicit_utils.hpp"
+#include "iceicle/fe_definitions.hpp"
 #include "iceicle/fespace/fespace.hpp"
 #include "iceicle/geometry/face.hpp"
 #include "iceicle/disc/projection.hpp"
@@ -136,7 +137,7 @@ int main(int argc, char *argv[]){
 
         RK3TVD solver{fespace, disc, dt, stop_condition};
         solver.ivis = (cli_args["ivis"].has_value()) ? cli_args["ivis"].as<IDX>() : 100;
-        io::DatWriter<T, IDX, ndim> writer{fespace};
+        io::DatWriter<T, IDX, ndim, l2_conformity(ndim)> writer{fespace};
         writer.register_fields(u, "u");
         solver.vis_callback = [&](decltype(solver) &solver){
             T sum = 0.0;

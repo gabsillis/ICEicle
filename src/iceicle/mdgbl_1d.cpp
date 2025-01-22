@@ -3,6 +3,7 @@
 #include "iceicle/build_config.hpp"
 #include "iceicle/dat_writer.hpp"
 #include "iceicle/disc/burgers.hpp"
+#include "iceicle/fe_definitions.hpp"
 #include "iceicle/fe_function/fespan.hpp"
 #include "iceicle/fe_function/geo_layouts.hpp"
 #include "iceicle/fespace/fespace.hpp"
@@ -159,7 +160,7 @@ int main(int argc, char *argv[]){
             };
             PetscNewton solver{fespace, disc, conv_criteria, mpi::comm_world};
             solver.ivis = 1;
-            io::DatWriter<T, IDX, ndim> writer{fespace};
+            io::DatWriter<T, IDX, ndim, l2_conformity(ndim)> writer{fespace};
             writer.register_fields(u, "u");
             solver.vis_callback = [&](IDX k, Vec res_data, Vec du_data){
                 T res_norm;

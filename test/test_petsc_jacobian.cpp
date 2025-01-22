@@ -168,7 +168,7 @@ TEST(test_petsc_jacobian, test_domain_x){
     MatSetFromOptions(jac);
 
     // get the jacobian and residual from petsc interface
-    form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+    form_petsc_jacobian_fd(fespace, disc, u, res, jac, mpi::comm_world);
     form_petsc_mdg_jacobian_fd(fespace, disc, u, coord, mdg_res, jac);
     MatAssemblyBegin(jac, MAT_FINAL_ASSEMBLY);
     MatAssemblyEnd(jac, MAT_FINAL_ASSEMBLY);
@@ -341,7 +341,7 @@ TEST(test_petsc_jacobian, test_mdg_bl){
     MatSetFromOptions(jac);
 
     // get the jacobian and residual from petsc interface
-    form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+    form_petsc_jacobian_fd(fespace, disc, u, res, jac, mpi::comm_world);
     form_petsc_mdg_jacobian_fd(fespace, disc, u, coord, mdg_res, jac);
     MatAssemblyBegin(jac, MAT_FINAL_ASSEMBLY);
 MatAssemblyEnd(jac, MAT_FINAL_ASSEMBLY);

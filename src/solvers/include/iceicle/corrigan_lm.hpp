@@ -5,11 +5,13 @@
 /// @author Gianni Absillis (gabsill@ncsu.edu)
 
 #include "Numtool/fixed_size_tensor.hpp"
+#include "iceicle/fe_definitions.hpp"
 #include "iceicle/fe_function/component_span.hpp"
 #include "iceicle/fe_function/fespan.hpp"
 #include "iceicle/fe_function/geo_layouts.hpp"
 #include "iceicle/fe_function/layout_right.hpp"
 #include "iceicle/fespace/fespace.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/mpi_type.hpp"
 #include "iceicle/nonlinear_solver_utils.hpp"
 #include "iceicle/petsc_interface.hpp"
@@ -31,6 +33,10 @@ namespace iceicle::solvers {
     namespace impl {
         /// @brief Petsc context for the Gauss Newton subproblem
         struct GNSubproblemCtx {
+
+            /// the mpi communicator 
+            mpi::communicator_type comm;
+
             /// the Jacobian Matrix
             Mat J; 
 
@@ -81,7 +87,7 @@ namespace iceicle::solvers {
             PetscCall(MatMultTranspose(ctx->J, ctx->Jx, y));
 
             Vec lambdax;
-            VecCreate(PETSC_COMM_WORLD, &lambdax);
+            VecCreate(ctx->comm, &lambdax);
             VecSetSizes(lambdax, ctx->npde + ctx->ngeo, PETSC_DETERMINE);
             VecSetFromOptions(lambdax);
             PetscScalar* lambdax_data;
@@ -119,10 +125,10 @@ namespace iceicle::solvers {
         // ================
 
         /// @brief reference to the fespace to use
-        FESpace<T, IDX, ndim>& fespace;
+        FESpace<T, IDX, ndim, l2_conformity(ndim)>& fespace;
 
         /// @brief the isoparametric continuous fespace
-        FESpace<T, IDX, ndim> cg_fespace;
+        FESpace<T, IDX, ndim, h1_conformity(ndim)> cg_fespace;
 
         /// @brief reference to the discretization to use
         disc_class& disc;
@@ -137,6 +143,9 @@ namespace iceicle::solvers {
 
         /// @brief map of geometry dofs to consider for interface conservation enforcement
         const geo_dof_map<T, IDX, ndim>& geo_map;
+
+        /// @brief the multiprocess communiator to use
+        mpi::communicator_type comm;
 
         // === Petsc Data Members ===
 
@@ -181,11 +190,11 @@ namespace iceicle::solvers {
         /// is given a reference to this when called 
         /// default is to print out a l2 norm of the residual data array
         /// Passes a reference to this, the current iteration number, the residual vector, and the du vector
-        std::function<void(IDX, Vec, Vec)> vis_callback = []
+        std::function<void(IDX, Vec, Vec)> vis_callback = [&]
             (IDX k, Vec res_data, Vec du_data)
         {
             T res_norm;
-            PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &res_norm));
+            PetscCallAbort(comm, VecNorm(res_data, NORM_2, &res_norm));
             std::cout << fmt::format("itime: {:6d} | residual l1: {:16.8f}", k, res_norm) << std::endl;
         };
 
@@ -253,10 +262,11 @@ namespace iceicle::solvers {
             ConvergenceCriteria<T, IDX>& conv_criteria,
             const ls_type& linesearch,
             const geo_dof_map<T, IDX, ndim>& geo_map,
+            mpi::communicator_type comm,
             bool explicitly_form_subproblem = false,
             bool sparse_jacobian_calculation = true
         ) : fespace{fespace}, cg_fespace(fespace.meshptr), disc{disc}, conv_criteria{conv_criteria}, 
-            linesearch{linesearch}, geo_map{geo_map},
+            linesearch{linesearch}, geo_map{geo_map}, comm{comm},
             explicitly_form_subproblem{explicitly_form_subproblem},
             sparse_jacobian_calculation{sparse_jacobian_calculation},
             lambda_el(fespace.elements.size(), 0)
@@ -264,35 +274,37 @@ namespace iceicle::solvers {
             static constexpr int neq = disc_class::nv_comp;
 
             // define data layouts
-            fe_layout_right u_layout{fespace.dg_map, std::integral_constant<std::size_t, neq>{}};
+            fe_layout_right u_layout{fespace, std::integral_constant<std::size_t, neq>{}, std::true_type{}};
+            fe_layout_right res_layout{exclude_ghost(u_layout)};
             geo_data_layout geo_layout{geo_map};
             ic_residual_layout<T, IDX, ndim, neq> ic_layout{geo_map};
 
             // determine the system sizes on the local processor
-            PetscInt local_u_size = u_layout.size() + geo_layout.size();
-            PetscInt local_res_size = u_layout.size() + ic_layout.size();
+            PetscInt local_u_size = u_layout.owned_size(comm) + geo_layout.size();
+            PetscInt local_res_size = res_layout.owned_size(comm) + ic_layout.size();
 
-
-            std::cout << std::endl << " System information: " << std::endl;
-            std::cout <<              "---------------------" << std::endl;
-
-            IDX total_pde_unknowns, total_geo_unknowns, total_pde_residual, total_ic_residual;
-            IDX local_pde_unknowns = u_layout.size();
+            IDX total_geo_unknowns, total_ic_residual;
             IDX local_geo_unknowns = geo_layout.size();
-            IDX local_pde_residual = u_layout.size();
             IDX local_ic_residual = ic_layout.size();
-            MPI_Allreduce(&local_pde_unknowns, &total_pde_unknowns, 1, mpi_get_type<IDX>(), MPI_SUM, PETSC_COMM_WORLD);
-            MPI_Allreduce(&local_geo_unknowns, &total_geo_unknowns, 1, mpi_get_type<IDX>(), MPI_SUM, PETSC_COMM_WORLD);
-            MPI_Allreduce(&local_pde_residual, &total_pde_residual, 1, mpi_get_type<IDX>(), MPI_SUM, PETSC_COMM_WORLD);
-            MPI_Allreduce(&local_ic_residual, &total_ic_residual, 1, mpi_get_type<IDX>(), MPI_SUM, PETSC_COMM_WORLD);
+            MPI_Allreduce(&local_geo_unknowns, &total_geo_unknowns, 1, mpi_get_type<IDX>(), MPI_SUM, comm);
+            MPI_Allreduce(&local_ic_residual, &total_ic_residual, 1, mpi_get_type<IDX>(), MPI_SUM, comm);
 
-            std::cout << "PDE unknowns      : " << total_pde_unknowns << std::endl;
-            std::cout << "Geometry unknowns : " << total_geo_unknowns << std::endl;
-            std::cout << "PDE residual size : " << total_pde_residual << std::endl;
-            std::cout << "ICE residual size : " << total_ic_residual << std::endl;
+            mpi::execute_on_rank(0, [&]{
+
+                std::cout << std::endl << " System information: " << std::endl;
+                std::cout <<              "---------------------" << std::endl;
+
+                IDX total_pde_unknowns = u_layout.par_size();
+                IDX total_pde_residual = res_layout.par_size();
+
+                std::cout << "PDE unknowns      : " << total_pde_unknowns << std::endl;
+                std::cout << "Geometry unknowns : " << total_geo_unknowns << std::endl;
+                std::cout << "PDE residual size : " << total_pde_residual << std::endl;
+                std::cout << "ICE residual size : " << total_ic_residual << std::endl;
+            });
 
             // Create and set up the jacobian matrix 
-            MatCreate(PETSC_COMM_WORLD, &jac);
+            MatCreate(comm, &jac);
             MatSetSizes(jac, local_res_size, local_u_size, PETSC_DETERMINE, PETSC_DETERMINE);
             MatSetFromOptions(jac);
             MatSetUp(jac);
@@ -306,16 +318,16 @@ namespace iceicle::solvers {
 
             } else {
                 
-                MatCreate(PETSC_COMM_WORLD, &subproblem_mat);
+                MatCreate(comm, &subproblem_mat);
                 MatSetSizes(subproblem_mat, local_u_size, local_u_size, PETSC_DETERMINE, PETSC_DETERMINE);
                 // setup the context and Shell matrix
-                VecCreate(PETSC_COMM_WORLD, &Jx);
+                VecCreate(comm, &Jx);
                 VecSetSizes(Jx, local_res_size, PETSC_DETERMINE);
                 VecSetFromOptions(Jx);
 
                 subproblem_ctx.J = jac;
                 subproblem_ctx.Jx = Jx;
-                subproblem_ctx.npde = fespace.dg_map.calculate_size_requirement(disc_class::nv_comp);
+                subproblem_ctx.npde = local_u_size;
                 subproblem_ctx.ngeo = geo_map.size();
 
                 MatSetType(subproblem_mat, MATSHELL);
@@ -326,25 +338,25 @@ namespace iceicle::solvers {
 
             // Create and set up vectors
             // Create and set up the vectors
-            VecCreate(PETSC_COMM_WORLD, &res_data);
+            VecCreate(comm, &res_data);
             VecSetSizes(res_data, local_res_size, PETSC_DETERMINE);
             VecSetFromOptions(res_data);
             
 
-            VecCreate(PETSC_COMM_WORLD, &Jtr);
+            VecCreate(comm, &Jtr);
             VecSetSizes(Jtr, local_u_size, PETSC_DETERMINE);
             VecSetFromOptions(Jtr);
 
-            VecCreate(PETSC_COMM_WORLD, &du_data);
+            VecCreate(comm, &du_data);
             VecSetSizes(du_data, local_u_size, PETSC_DETERMINE);
             VecSetFromOptions(du_data);
 
             // Create the linear solver and preconditioner
-            PetscCallAbort(PETSC_COMM_WORLD, KSPCreate(PETSC_COMM_WORLD, &ksp));
-            PetscCallAbort(PETSC_COMM_WORLD, KSPSetFromOptions(ksp));
+            PetscCallAbort(comm, KSPCreate(comm, &ksp));
+            PetscCallAbort(comm, KSPSetFromOptions(ksp));
 
             // default preconditioner
-            PetscCallAbort(PETSC_COMM_WORLD, KSPGetPC(ksp, &pc));
+            PetscCallAbort(comm, KSPGetPC(ksp, &pc));
 
             if(explicitly_form_subproblem){
                 PCSetType(pc, PCILU);
@@ -353,7 +365,7 @@ namespace iceicle::solvers {
             }
 
             // Get user input (can override defaults set above)
-            PetscCallAbort(PETSC_COMM_WORLD, KSPSetFromOptions(ksp));
+            PetscCallAbort(comm, KSPSetFromOptions(ksp));
         }
 
         // ====================
@@ -372,7 +384,8 @@ namespace iceicle::solvers {
             static constexpr int neq = disc_class::nv_comp;
 
             // define data layouts
-            fe_layout_right u_layout{fespace.dg_map, std::integral_constant<std::size_t, neq>{}};
+            fe_layout_right u_layout{u.get_layout()};
+            fe_layout_right res_layout{exclude_ghost(u_layout)};
             geo_data_layout geo_layout{geo_map};
             ic_residual_layout<T, IDX, ndim, neq> ic_layout{geo_map};
 
@@ -385,14 +398,14 @@ namespace iceicle::solvers {
             if(sparse_jacobian_calculation) 
             { // vecspan scope
                 petsc::VecSpan res_view{res_data};
-                fespan res{res_view.data(), u.get_layout()};
-                form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+                fespan res{res_view.data(), res_layout};
+                form_petsc_jacobian_fd(fespace, disc, u, res, jac, comm);
                 dofspan mdg_res{res_view.data() + u_layout.size(), ic_layout};
                 form_petsc_mdg_jacobian_fd(fespace, disc, u, coord, mdg_res, jac);
             } // end vecspan scope
             else 
             {
-                form_petsc_jacobian_dense_fd(fespace, disc, u, coord, res_data, jac);
+                form_petsc_jacobian_dense_fd(fespace, disc, u, coord, res_data, jac, comm);
             }
 
             // assemble the Jacobian matrix  (assembly needed for symbolic product)
@@ -405,25 +418,25 @@ namespace iceicle::solvers {
             }
 
             // set the initial residual norm
-            PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &(conv_criteria.r0)));
+            PetscCallAbort(comm, VecNorm(res_data, NORM_2, &(conv_criteria.r0)));
 
             IDX k;
             for(k = 0; k < conv_criteria.kmax; ++k){
 
 
 //                PetscViewer jacobian_viewer;
-//                PetscViewerASCIIOpen(PETSC_COMM_WORLD, ("iceicle_data/jacobian_view" + std::to_string(k) + ".dat").c_str(), &jacobian_viewer);
+//                PetscViewerASCIIOpen(comm, ("iceicle_data/jacobian_view" + std::to_string(k) + ".dat").c_str(), &jacobian_viewer);
 //                PetscViewerPushFormat(jacobian_viewer, PETSC_VIEWER_ASCII_DENSE);
 //                MatView(jac, jacobian_viewer);
 //
 //                PetscViewer r_viewer;
-//                PetscViewerASCIIOpen(PETSC_COMM_WORLD, ("iceicle_data/residual_view" + std::to_string(k) + ".dat").c_str(), &r_viewer);
+//                PetscViewerASCIIOpen(comm, ("iceicle_data/residual_view" + std::to_string(k) + ".dat").c_str(), &r_viewer);
 //                PetscViewerPushFormat(r_viewer, PETSC_VIEWER_ASCII_DENSE);
 //                VecView(res_data, r_viewer);
 
 
                 // form JTr
-                PetscCallAbort(PETSC_COMM_WORLD, MatMultTranspose(jac, res_data, Jtr));
+                PetscCallAbort(comm, MatMultTranspose(jac, res_data, Jtr));
 
                 // Form the subproblem
                 if(explicitly_form_subproblem){
@@ -433,12 +446,12 @@ namespace iceicle::solvers {
 
                     // Regularization
                     Vec lambda;
-                    VecCreate(PETSC_COMM_WORLD, &lambda);
+                    VecCreate(comm, &lambda);
                     VecSetSizes(lambda, u_layout.size() + geo_layout.size(), PETSC_DETERMINE);
                     VecSetFromOptions(lambda);
                     { // lambda read scope
                         petsc::VecSpan lambda_view{lambda};
-                        PetscCallAbort(PETSC_COMM_WORLD,
+                        PetscCallAbort(comm,
                                 MatGetColumnNorms(jac, NORM_2, lambda_view.data()));
 
                         // diagonal regularization
@@ -533,16 +546,16 @@ namespace iceicle::solvers {
                 } else {
                     // matrix product is implicitly defined in the operator
                 }
-                PetscCallAbort(PETSC_COMM_WORLD, MatAssemblyBegin(subproblem_mat, MAT_FINAL_ASSEMBLY));
-                PetscCallAbort(PETSC_COMM_WORLD, MatAssemblyEnd(subproblem_mat, MAT_FINAL_ASSEMBLY));
+                PetscCallAbort(comm, MatAssemblyBegin(subproblem_mat, MAT_FINAL_ASSEMBLY));
+                PetscCallAbort(comm, MatAssemblyEnd(subproblem_mat, MAT_FINAL_ASSEMBLY));
 
                 // Solve the subproblem
-                PetscCallAbort(PETSC_COMM_WORLD, KSPSetOperators(ksp, subproblem_mat, subproblem_mat));
-                PetscCallAbort(PETSC_COMM_WORLD, KSPSolve(ksp, Jtr, du_data));
+                PetscCallAbort(comm, KSPSetOperators(ksp, subproblem_mat, subproblem_mat));
+                PetscCallAbort(comm, KSPSolve(ksp, Jtr, du_data));
 
                 if(verbosity >= 4){
                     PetscViewer viewer;
-                    PetscViewerASCIIOpen(PETSC_COMM_WORLD, ("subproblem" + std::to_string(k)).c_str(),&viewer);
+                    PetscViewerASCIIOpen(comm, ("subproblem" + std::to_string(k)).c_str(),&viewer);
                     PetscViewerPushFormat(viewer, PETSC_VIEWER_ASCII_DENSE);
                     MatView(subproblem_mat, viewer);
                     PetscViewerDestroy(&viewer);
@@ -594,7 +607,7 @@ namespace iceicle::solvers {
 
                         // working array for linesearch residuals
                         std::vector<T> r_work_storage(u.size());
-                        fespan res_work{r_work_storage.data(), u.get_layout()};
+                        fespan res_work{r_work_storage.data(), exclude_ghost(u.get_layout())};
 
                         std::vector<T> r_mdg_work_storage(ic_layout.size());
                         dofspan mdg_res{r_mdg_work_storage, ic_layout};
@@ -612,7 +625,7 @@ namespace iceicle::solvers {
                         update_mesh(coord_step, *(fespace.meshptr));
 
                         // === Get the residuals ===
-                        form_residual(fespace, disc, u_step, res_work);
+                        form_residual(fespace, disc, u_step, res_work, comm);
                         form_mdg_residual(fespace, disc, u_step, geo_map, mdg_res);
                         T rnorm = res_work.vector_norm() + mdg_res.vector_norm();
                         rnorm_step = rnorm; // extract it
@@ -687,14 +700,14 @@ namespace iceicle::solvers {
                     // and require manual 
                     update_mesh(coord, *(fespace.meshptr));
                     petsc::VecSpan res_view{res_data};
-                    fespan res{res_view.data(), u.get_layout()};
-                    form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+                    fespan res{res_view.data(), res_layout};
+                    form_petsc_jacobian_fd(fespace, disc, u, res, jac, comm);
                     dofspan mdg_res{res_view.data() + u_layout.size(), ic_layout};
                     form_petsc_mdg_jacobian_fd(fespace, disc, u, coord, mdg_res, jac);
                 }
                 else
                 {
-                    form_petsc_jacobian_dense_fd(fespace, disc, u, coord, res_data, jac);
+                    form_petsc_jacobian_dense_fd(fespace, disc, u, coord, res_data, jac, comm);
                 }
 
                 // assemble the Jacobian matrix 
@@ -703,7 +716,7 @@ namespace iceicle::solvers {
 
                 // get the residual norm
                 T rk;
-                PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &rk));
+                PetscCallAbort(comm, VecNorm(res_data, NORM_2, &rk));
 
                 // visualization
                 if(ivis > 0 && k % ivis == 0) {

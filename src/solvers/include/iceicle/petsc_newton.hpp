@@ -76,6 +76,9 @@ namespace iceicle::solvers {
         /// @brief the linesearch strategy
         const ls_type& linesearch;
 
+        /// @brief the mpi communicator
+        mpi::communicator_type comm;
+
         /// @brief the convergence Criteria
         /// determines whether the solver should terminate
         ConvergenceCriteria<T, IDX> conv_criteria;
@@ -100,19 +103,18 @@ namespace iceicle::solvers {
         /// very minimal by default other options are defined in this header
         /// or a custom function can be made 
         ///
-        /// Passes a reference to this, the current iteration number, the residual vector, and the du vector
-        std::function<void(IDX, Vec, Vec)> diag_callback = []
+        /// the current iteration number, the residual vector, and the du vector
+        std::function<void(IDX, Vec, Vec)> diag_callback = [&]
             (IDX k, Vec res_data, Vec du_data)
         {
-            int iproc;
-            MPI_Comm_rank(PETSC_COMM_WORLD, &iproc);
+            int iproc = mpi::rank(comm);
             if(iproc == 0){
                 std::cout << "Diagnostics for iteration: " << k << std::endl;
             }
             if(iproc == 0) std::cout << "Residual: " << std::endl;
-            PetscCallAbort(PETSC_COMM_WORLD, VecView(res_data, PETSC_VIEWER_STDOUT_WORLD));
+            PetscCallAbort(comm, VecView(res_data, PETSC_VIEWER_STDOUT_WORLD));
             if(iproc == 0) std::cout << std::endl << "du: " << std::endl;
-            PetscCallAbort(PETSC_COMM_WORLD, VecView(du_data, PETSC_VIEWER_STDOUT_WORLD));
+            PetscCallAbort(comm, VecView(du_data, PETSC_VIEWER_STDOUT_WORLD));
             if(iproc == 0) std::cout << "------------------------------------------" << std::endl << std::endl; 
         };
 
@@ -125,11 +127,11 @@ namespace iceicle::solvers {
         /// is given a reference to this when called 
         /// default is to print out a l2 norm of the residual data array
         /// Passes a reference to this, the current iteration number, the residual vector, and the du vector
-        std::function<void(IDX, Vec, Vec)> vis_callback = []
+        std::function<void(IDX, Vec, Vec)> vis_callback = [&]
             (IDX k, Vec res_data, Vec du_data)
         {
             T res_norm;
-            PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &res_norm));
+            PetscCallAbort(comm, VecNorm(res_data, NORM_2, &res_norm));
             std::cout << std::setprecision(8);
             std::cout << "itime: " << std::setw(6) << k
                 << " | residual l2: " << std::setw(14) << res_norm
@@ -156,36 +158,36 @@ namespace iceicle::solvers {
             const ls_type& linesearch,
             mpi::communicator_type comm
         ) : fespace(fespace), disc(disc), linesearch{linesearch}, 
-            conv_criteria{conv_criteria} 
+            conv_criteria{conv_criteria}, comm{comm}
         {
             PetscInt local_u_size = fespace.owned_ndof(comm) * disc_class::nv_comp;
             PetscInt local_res_size = local_u_size;
 
             // Create and set up the matrix if not given 
-            MatCreate(PETSC_COMM_WORLD, &(this->jac));
+            MatCreate(comm, &(this->jac));
             MatSetSizes(this->jac, local_res_size, local_u_size, PETSC_DETERMINE, PETSC_DETERMINE);
             MatSetFromOptions(this->jac);
             MatSetUp(this->jac);
 
             // Create and set up the vectors
-            VecCreate(PETSC_COMM_WORLD, &res_data);
+            VecCreate(comm, &res_data);
             VecSetSizes(res_data, local_res_size, PETSC_DETERMINE);
             VecSetFromOptions(res_data);
             
 
-            VecCreate(PETSC_COMM_WORLD, &du_data);
+            VecCreate(comm, &du_data);
             VecSetSizes(du_data, local_u_size, PETSC_DETERMINE);
             VecSetFromOptions(du_data);
 
             // Create the linear solver and preconditioner
-            PetscCallAbort(PETSC_COMM_WORLD, KSPCreate(PETSC_COMM_WORLD, &ksp));
+            PetscCallAbort(comm, KSPCreate(comm, &ksp));
 
             // default to sor preconditioner
-            PetscCallAbort(PETSC_COMM_WORLD, KSPGetPC(ksp, &pc));
+            PetscCallAbort(comm, KSPGetPC(ksp, &pc));
             PCSetType(pc, PCSOR);
 
             // Get user input (can override defaults set above)
-            PetscCallAbort(PETSC_COMM_WORLD, KSPSetFromOptions(ksp));
+            PetscCallAbort(comm, KSPSetFromOptions(ksp));
         }
 
         PetscNewton(
@@ -219,13 +221,13 @@ namespace iceicle::solvers {
             {
                 petsc::VecSpan res_view{res_data};
                 fespan res{res_view.data(), exclude_ghost(u.get_layout())};
-                form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+                form_petsc_jacobian_fd(fespace, disc, u, res, jac, comm);
 //                std::cout << "res_initial" << std::endl;
 //                std::cout << res;
             } // end scope of res_view
 
             // set the initial residual norm
-            PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &(conv_criteria.r0)));
+            PetscCallAbort(comm, VecNorm(res_data, NORM_2, &(conv_criteria.r0)));
 
             IDX k;
             for(k = 0; k < conv_criteria.kmax; ++k){
@@ -240,15 +242,16 @@ namespace iceicle::solvers {
                 // view jacobian matrix
                 if(verbosity >= 4){
                     PetscViewer jacobian_viewer;
-                    PetscViewerASCIIOpen(PETSC_COMM_WORLD, ("iceicle_data/jacobian_view" + std::to_string(k) + ".dat").c_str(), &jacobian_viewer);
+                    PetscViewerASCIIOpen(comm, ("iceicle_data/jacobian_view" + std::to_string(k) + ".dat").c_str(),
+                            &jacobian_viewer);
                     PetscViewerPushFormat(jacobian_viewer, PETSC_VIEWER_ASCII_DENSE);
                     MatView(jac, jacobian_viewer);
                     PetscViewerDestroy(&jacobian_viewer);
     //                MatView(jac, PETSC_VIEWER_STDOUT_WORLD); // for debug purposes
                 }
 
-                PetscCallAbort(PETSC_COMM_WORLD, KSPSetOperators(ksp, this->jac, this->jac));
-                PetscCallAbort(PETSC_COMM_WORLD, KSPSolve(ksp, res_data, du_data));
+                PetscCallAbort(comm, KSPSetOperators(ksp, this->jac, this->jac));
+                PetscCallAbort(comm, KSPSolve(ksp, res_data, du_data));
 
                 // update u
                 if constexpr (std::is_same_v<ls_type, no_linesearch<T, IDX>>){
@@ -269,7 +272,7 @@ namespace iceicle::solvers {
 
                     // working array for linesearch residuals
                     std::vector<T> r_work_storage(u.size());
-                    fespan res_work{r_work_storage.data(), u.get_layout()};
+                    fespan res_work{r_work_storage.data(), exclude_ghost(u.get_layout())};
 
                     std::vector<T> r_mdg_work_storage{};
 
@@ -281,7 +284,7 @@ namespace iceicle::solvers {
                         copy_fespan(u, u_step);
                         axpy(-alpha_arg, du, u_step);
 
-                        form_residual(fespace, disc, u_step, res_work);
+                        form_residual(fespace, disc, u_step, res_work, comm);
                         T rnorm = res_work.vector_norm();
 
                         // verbose output
@@ -311,12 +314,12 @@ namespace iceicle::solvers {
                     petsc::VecSpan res_view{res_data};
                     fespan res{res_view.data(), exclude_ghost(u.get_layout())};
                     MatZeroEntries(jac); // zero out the jacobian
-                    form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+                    form_petsc_jacobian_fd(fespace, disc, u, res, jac, comm);
                 } // end scope of res_view
 
                 // get the residual norm
                 T rk;
-                PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &rk));
+                PetscCallAbort(comm, VecNorm(res_data, NORM_2, &rk));
                 
                 // Diagnostics 
                 if(idiag > 0 && k % idiag == 0) {

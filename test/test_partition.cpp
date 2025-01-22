@@ -458,7 +458,7 @@ TEST(test_petsc_jacobian, test_domain_integral){
     PetscInt rowstart, rowend;
     MatGetOwnershipRange(jac, &rowstart, &rowend);
     // get the jacobian and residual from petsc interface
-    solvers::form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+    solvers::form_petsc_jacobian_fd(fespace, disc, u, res, jac, mpi::comm_world);
     PetscCallVoid(MatAssemblyBegin(jac, MAT_FINAL_ASSEMBLY));
     PetscCallVoid(MatAssemblyEnd(jac, MAT_FINAL_ASSEMBLY));
 
@@ -670,7 +670,7 @@ TEST(test_petsc_jacobian, test_trace_integral){
     PetscInt rowstart, rowend;
     MatGetOwnershipRange(jac, &rowstart, &rowend);
     // get the jacobian and residual from petsc interface
-    solvers::form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+    solvers::form_petsc_jacobian_fd(fespace, disc, u, res, jac, mpi::comm_world);
     PetscCallVoid(MatAssemblyBegin(jac, MAT_FINAL_ASSEMBLY));
     PetscCallVoid(MatAssemblyEnd(jac, MAT_FINAL_ASSEMBLY));
 
