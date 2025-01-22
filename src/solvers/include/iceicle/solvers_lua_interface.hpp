@@ -6,6 +6,7 @@
 #include "iceicle/fe_function/geo_layouts.hpp"
 #include "iceicle/disc/l2_error.hpp"
 #include "iceicle/geometry/face.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/string_utils.hpp"
 #include "iceicle/writer.hpp"
 #include <array>
@@ -780,18 +781,9 @@ namespace iceicle::solvers {
                             };
 
                             T error = l2_error(exactfunc, fespace, u);
-#ifdef ICEICLE_USE_MPI
-                            error = error * error; // un-sqrt it before we sum :3
-                            T error_reduce;
-                            MPI_Allreduce(&error, &error_reduce, 1, mpi_get_type<T>(), MPI_SUM, MPI_COMM_WORLD);
-
-                            int myrank;
-                            MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+                            int myrank = mpi::rank(mpi::comm_world);
                             if(myrank == 0)
-                                std::cout << "L2 error: " << std::setprecision(12) << std::sqrt(error_reduce) << std::endl;
-#else
-                            std::cout << "L2 error: " << std::setprecision(12) << error << std::endl;
-#endif
+                                std::cout << "L2 error: " << std::setprecision(12) << error << std::endl;
                         } 
 
                         if(eq_icase(task_name, "l1_error")){
@@ -819,17 +811,8 @@ namespace iceicle::solvers {
                             };
 
                             T error = l1_error(exactfunc, fespace, u);
-#ifdef ICEICLE_USE_MPI
-                            T error_reduce;
-                            MPI_Allreduce(&error, &error_reduce, 1, mpi_get_type<T>(), MPI_SUM, MPI_COMM_WORLD);
-
-                            int myrank;
-                            MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
-                            if(myrank == 0)
-                                std::cout << "L1 error: " << std::setprecision(12) << error_reduce << std::endl;
-#else
-                            std::cout << "L1 error: " << std::setprecision(12) << error << std::endl;
-#endif
+                            if(mpi::rank(mpi::comm_world) == 0)
+                                std::cout << "L1 error: " << std::setprecision(12) << error << std::endl;
                         } 
 
                         if(eq_icase(task_name, "linf_error")) {

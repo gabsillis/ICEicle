@@ -241,19 +241,33 @@ namespace iceicle::io {
                 field_path /= 
                         collection_name + "_"
                         + (name + std::to_string(i / 2)
-                        + "_rank" + std::to_string(mpi::mpi_world_rank())
                         + "_i" + std::to_string(itime)
                         + ".dat");
 
-                std::ofstream out{field_path};
-                if(!out) {
-                    throw std::logic_error("could not open mesh file for writing.");
-                }
+                // clear out the file
+                mpi::execute_on_rank(0, [field_path]{
+                    std::ofstream out{field_path, std::ios::trunc};
+                    out.close();
+                });
 
-                if(!meshptr){
-                    throw std::logic_error("mesh doesn't exist");
+                mpi::mpi_sync();
+
+                for(int irank = 0; irank < mpi::mpi_world_size(); ++irank){
+
+                    if(irank == mpi::mpi_world_rank()){
+                        // open to append to file
+                        std::ofstream out{field_path, std::ios::app};
+                        if(!out) {
+                            throw std::logic_error("could not open mesh file for writing.");
+                        }
+
+                        if(!meshptr){
+                            throw std::logic_error("mesh doesn't exist");
+                        }
+                        field.write_data(out, *fespace_ptr);
+                    }
+                    mpi::mpi_sync();
                 }
-                field.write_data(out, *fespace_ptr);
             }
         }
     };

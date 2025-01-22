@@ -227,6 +227,8 @@ namespace iceicle {
      * @tparam uLayoutPolicy the layout policy for the finite element soution 
      * @tparam uAccessorPolicy the accessor policy for the finite element solution 
      *
+     * TODO: parallel vers
+     *
      * @param exact_sol the exact solution to compare to
      *   f(x, out)
      *   where:

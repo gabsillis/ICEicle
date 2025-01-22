@@ -110,6 +110,7 @@ return {
         -- so we add this to the tasks
         tasks = {
             "l1_error",
+            "l2_error",
             "plot_exact_projection", -- we want to plot a projection of the exact solution
         },
     },
