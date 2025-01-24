@@ -2,7 +2,7 @@
 /// @author Gianni Absillis (gabsill@ncsu.edu)
 
 #pragma once
-#include "iceicle/anomaly_log.hpp"
+#include "iceicle/vtk_writer.hpp"
 #include "iceicle/pvd_writer.hpp"
 #include <iceicle/fespace/fespace.hpp>
 #include <iceicle/dat_writer.hpp>
@@ -13,15 +13,30 @@ namespace iceicle::io {
     /// @brief external function interface for type erasure to write a file 
     /// writes the file with the given time index and time values 
     template<class T, class IDX, int ndim, int conformity>
-    auto write_file(DatWriter<T, IDX, ndim, conformity>& writer, int itime, T time) -> void {
+    auto write_file(DatWriter<T, IDX, ndim, conformity>& writer, int itime, double time) -> void {
         writer.write_dat(itime, time);
     }
 
     /// @brief external function interface for type erasure to write a file 
     /// writes the file with the given time index and time values 
     template<class T, class IDX, int ndim, int conformity>
-    auto write_file(PVDWriter<T, IDX, ndim, conformity>& writer, int itime, T time) -> void {
+    auto write_file(PVDWriter<T, IDX, ndim, conformity>& writer, int itime, double time) -> void {
         writer.write_vtu(itime, time);
+    }
+
+
+    // Writer concept requirements 
+    template<class T, class IDX, int ndim, int conformity>
+    inline
+    auto write_file(const PVTUWriter<T, IDX, ndim, conformity>& writer, int itime, double time)
+    -> void 
+    { writer.write(itime, time); }
+
+    namespace impl {
+        template<class T, class IDX, int ndim, int conformity>
+        auto rename_collection(PVTUWriter<T, IDX, ndim, conformity>& writer, std::string_view new_name)
+        -> void
+        { writer.rename_collection(new_name); }
     }
 
     namespace impl {

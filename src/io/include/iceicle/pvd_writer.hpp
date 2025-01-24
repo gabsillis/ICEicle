@@ -1101,7 +1101,6 @@ namespace iceicle::io {
          * @param itime the timestep
          * @param time the time value
          * NOTE: the user is responsible for making sure itime and time are unique 
-         * (aside from parallel case, separate file names are generated per process in parallel)
          */
         void write_vtu(int itime, T time){
 

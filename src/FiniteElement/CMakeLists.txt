@@ -39,6 +39,11 @@ if(ICEICLE_USE_LUA)
 
     target_link_libraries(iceicle_fe PUBLIC sol2)
 endif()
+if(ICEICLE_USE_VTK)
+    target_link_libraries( iceicle_fe PUBLIC ${VTK_LIBRARIES} )
+    target_compile_definitions(iceicle_fe PUBLIC ICEICLE_USE_VTK)
+endif()
+    
 # include interface
 target_include_directories(iceicle_fe PUBLIC ${MPI_INCLUDE_PATH})
 target_include_directories(iceicle_fe PUBLIC

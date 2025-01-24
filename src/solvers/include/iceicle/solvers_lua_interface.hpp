@@ -2,13 +2,11 @@
 /// @author Gianni Absillis (gabsill@ncsu.edu)
 
 #pragma once
-#include "iceicle/disc/projection.hpp"
 #include "iceicle/fe_function/geo_layouts.hpp"
 #include "iceicle/disc/l2_error.hpp"
 #include "iceicle/geometry/face.hpp"
 #include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/string_utils.hpp"
-#include "iceicle/writer.hpp"
 #include <array>
 #include <iceicle/fespace/fespace.hpp>
 #include <iceicle/explicit_utils.hpp>
@@ -28,6 +26,9 @@
 #include <iceicle/corrigan_lm.hpp>
 #include <iceicle/petsc_newton.hpp>
 #include <iceicle/matrix_free_newton_krylov.hpp>
+#endif
+#ifdef ICEICLE_USE_VTK
+#include <iceicle/vtk_writer.hpp>
 #endif
 
 namespace iceicle::solvers {
@@ -115,17 +116,26 @@ namespace iceicle::solvers {
                     dat_writer.register_fields(u, disc.field_names);
                     writer = io::Writer{dat_writer};
                 } else {
-                    AnomalyLog::log_anomaly(Anomaly{"dat writer not defined for greater than 1D", general_anomaly_tag{}});
+                    AnomalyLog::log_anomaly("dat writer not defined for greater than 1D");
                 }
             }
 
             // .vtu writer 
             if(writer_name && eq_icase(writer_name.value(), "vtu")){
+                if(mpi::mpi_world_size() > 1)
+                    std::cerr << "Warning: vtu output is not written for parallel. \n"
+                        "Consider \"vtk\" as output writer instead.";
                 io::PVDWriter<T, IDX, ndim, conformity> pvd_writer{};
                 pvd_writer.register_fespace(fespace);
                 pvd_writer.register_fields(u, disc.field_names);
                 writer = pvd_writer;
             }
+#ifdef ICEICLE_USE_VTK
+            if(writer_name && eq_icase(writer_name.value(), "vtk")){
+                io::PVTUWriter pvtu_writer{fespace, mpi::comm_world};
+                writer = pvtu_writer;
+            }
+#endif
         }
         return writer;
     }

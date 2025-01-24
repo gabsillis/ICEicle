@@ -14,9 +14,11 @@
 #include <vtkXMLPUnstructuredGridWriter.h>
 #include <vtkUnstructuredGrid.h>
 #include <vtkCellData.h>
+#include <vtkDoubleArray.h>
 #include <vtkMPI.h>
 #include <vtkMPICommunicator.h>
 #include <vtkMPIController.h>
+#include <filesystem>
 namespace iceicle::io {
 
     /**
@@ -32,8 +34,8 @@ namespace iceicle::io {
             struct FieldsetConcept{
                 public:
                     virtual ~FieldsetConcept() = default;
-                    virtual void do_write_data(FESpace<T, IDX, ndim, conformity>& fespace, 
-                            vtkSmartPointer<vtkUnstructuredGrid> vtk_grid) = 0;
+                    virtual void do_write_data(const FESpace<T, IDX, ndim, conformity>& fespace, 
+                            vtkSmartPointer<vtkUnstructuredGrid> vtk_grid) const = 0;
                     virtual auto clone() const -> std::unique_ptr<FieldsetConcept> = 0;
             };
 
@@ -45,9 +47,14 @@ namespace iceicle::io {
 
                 FieldsetModel(FieldsetT fieldset) : _fieldset{std::move(fieldset)}{}
 
-                void do_write_data(FESpace<T, IDX, ndim, conformity>& fespace, 
-                        vtkSmartPointer<vtkUnstructuredGrid> vtk_grid) override 
+                void do_write_data(const FESpace<T, IDX, ndim, conformity>& fespace, 
+                        vtkSmartPointer<vtkUnstructuredGrid> vtk_grid) const override 
                 { _fieldset.write_data(fespace, vtk_grid); }
+
+                auto clone() const 
+                -> std::unique_ptr<FieldsetConcept> override 
+                { return std::make_unique<FieldsetModel>(*this); }
+
             };
 
             std::unique_ptr<FieldsetConcept> pimpl;
@@ -79,16 +86,16 @@ namespace iceicle::io {
             writeable_fieldset( writeable_fieldset&& other) = default;
             writeable_fieldset& operator=( writeable_fieldset&& other ) = default;
 
-            void write_data(FESpace<T, IDX, ndim, conformity>& fespace, 
-                    vtkSmartPointer<vtkUnstructuredGrid> vtk_grid) {
+            void write_data(const FESpace<T, IDX, ndim, conformity>& fespace, 
+                    vtkSmartPointer<vtkUnstructuredGrid> vtk_grid) const {
                 if(pimpl)
                     pimpl->do_write_data(fespace, vtk_grid);
             }
         };
 
         struct mpi_rank_fieldset {
-            void write_data(FESpace<T, IDX, ndim, conformity>& fespace, 
-                    vtkSmartPointer<vtkUnstructuredGrid> vtk_grid)
+            void write_data(const FESpace<T, IDX, ndim, conformity>& fespace, 
+                    vtkSmartPointer<vtkUnstructuredGrid> vtk_grid) const
             {
                 // Create an Array to represent the MPI rank for each cell 
                 vtkSmartPointer<vtkIntArray> rank_array = vtkSmartPointer<vtkIntArray>::New();
@@ -120,23 +127,36 @@ namespace iceicle::io {
         /// @brief the vtk file writer 
         vtkSmartPointer<vtkXMLPUnstructuredGridWriter> writer;
 
+        /// @brief the VTK mpi communicator
+        vtkSmartPointer<vtkMPICommunicator> vtk_comm;
+
         // === General Members ===
 
         /// @brief the finite element space
         FESpace<T, IDX, ndim, conformity>& fespace;
 
         /// @brief all the fieldsets
-        std::vector<writeable_fieldset>& fieldsets;
+        std::vector<writeable_fieldset> fieldsets;
 
         /// @brief the MPI communicator to use
         mpi::communicator_type comm;
+
+        /// @brief the name of the data collection 
+        std::string collection_name = "data";
+
+        /// @brief the directory where the collection will be stored 
+        std::filesystem::path data_directory;
 
         /// === Private implementation details ===
 
         /// @brief given an element transformation, the coordinates of the element, and solution order 
         /// generate the points to write to the vtk file for the given element
         [[nodiscard]] inline constexpr 
-        auto get_ref_pts(ElementTransformation<T, IDX, ndim>* trans, std::vector<Point> el_coord, int order) 
+        auto get_ref_pts(
+            const ElementTransformation<T, IDX, ndim>* trans, 
+            const std::span<Point> el_coord,
+            int order
+        ) const
         -> std::pair<vtkSmartPointer<vtkCell>, std::vector<Point>>
         {
             int output_order = std::max(trans->order, order);
@@ -171,14 +191,15 @@ namespace iceicle::io {
                 } break;
             }
 
+            vtkSmartPointer<vtkCell> empty_cell = vtkSmartPointer<vtkLagrangeQuadrilateral>::New();
             util::AnomalyLog::log_anomaly("Could not get element points");
-            return std::pair{vtkSmartPointer<vtkCell>::New(), std::vector<Point>{}};
+            return std::pair{empty_cell, std::vector<Point>{}};
         }
 
         /// @brief given a face and the solution order 
         /// generate the points to write to the vtk file for the given face 
         [[nodiscard]]inline
-auto get_ref_pts(Face<T, IDX, ndim>* faceptr, int order)
+        auto get_ref_pts(const Face<T, IDX, ndim>* faceptr, int order) const
         -> std::pair<vtkSmartPointer<vtkCell>, std::vector<FacePoint>>
         {
             int output_order = std::max(faceptr->geometry_order(), order);
@@ -187,7 +208,7 @@ auto get_ref_pts(Face<T, IDX, ndim>* faceptr, int order)
                 {
                     auto ref_cell = reference_hypercube_faces[output_order];
                     double* coords = ref_cell->GetParametricCoords();
-                    std::vector<Point> refpts(ref_cell->GetNumberOfPoints());
+                    std::vector<FacePoint> refpts(ref_cell->GetNumberOfPoints());
                     for(int ipoin = 0; ipoin < ref_cell->GetNumberOfPoints(); ++ipoin){
                         double * coords_start = coords + 3 * ipoin;
                         FacePoint refpt{};
@@ -203,10 +224,13 @@ auto get_ref_pts(Face<T, IDX, ndim>* faceptr, int order)
                 {
                     auto ref_cell = reference_simplex_faces[output_order];
                     double* coords = ref_cell->GetParametricCoords();
-                    std::vector<Point> refpts(ref_cell->GetNumberOfPoints());
+                    std::vector<FacePoint> refpts(ref_cell->GetNumberOfPoints());
                     for(int ipoin = 0; ipoin < ref_cell->GetNumberOfPoints(); ++ipoin){
                         double * coords_start = coords + 3 * ipoin;
-                        MATH::GEOMETRY::Point<T, ndim> refpt{};
+                        FacePoint refpt{};
+                        for(int idim = 0; idim < refpt.size(); ++idim){
+                            refpt[idim] = coords_start[idim];
+                        }
                         refpts[ipoin] = refpt;
                     }
                     return std::pair{ref_cell, refpts};
@@ -214,7 +238,8 @@ auto get_ref_pts(Face<T, IDX, ndim>* faceptr, int order)
             }
 
             util::AnomalyLog::log_anomaly("Could not get face points");
-            return std::pair{vtkSmartPointer<vtkCell>::New(), std::vector<FacePoint>{}};
+            vtkSmartPointer<vtkCell> empty_cell = vtkSmartPointer<vtkLagrangeQuadrilateral>::New();
+            return std::pair{empty_cell, std::vector<FacePoint>{}};
 
         }
 
@@ -224,14 +249,22 @@ auto get_ref_pts(Face<T, IDX, ndim>* faceptr, int order)
         ///
         /// Along with offsets to points for each element and trace, respectively
         [[nodiscard]] inline 
-        auto create_vtk_grid()
+        auto create_vtk_grid() const
         -> std::tuple< vtkSmartPointer< vtkUnstructuredGrid >, std::vector<IDX>, std::vector<IDX> >
         {
             auto vtk_grid = vtkSmartPointer<vtkUnstructuredGrid>::New();
-            vtk_grid->Allocate(fespace.elements.size()); // allocate for the number of owned elements
+            // allocate for the number of owned elements and all the traces
+            vtk_grid->Allocate(fespace.elements.size() + fespace.traces.size()); 
 
             IDX ivtk_pt = 0;
             vtkNew<vtkPoints> vtk_coord;
+
+            // ===================
+            // = Write the Nodes =
+            // ===================
+            // This is done by looping through the elements and then traces,
+            // getting the VTK reference cell,
+            // then interpolating to vtk's reference domain points
 
             // generate points for each element
             std::vector<IDX> el_pts_offsets = {0};
@@ -261,7 +294,7 @@ auto get_ref_pts(Face<T, IDX, ndim>* faceptr, int order)
             std::vector<IDX> trace_pts_offsets = {ivtk_pt};
             for(IDX itrace = 0; itrace < fespace.traces.size(); ++itrace){
                 const TraceSpace<T, IDX, ndim>& trace = fespace.traces[itrace];
-                int order = std::max({trace.elL.basis->getPolynomialOrder, trace.elR.basis->getPolynomialOrder(),
+                int order = std::max({trace.elL.basis->getPolynomialOrder(), trace.elR.basis->getPolynomialOrder(),
                         trace.trace_basis.getPolynomialOrder()});
                 auto [ref_cell, ref_pts] = get_ref_pts(trace.face, order);
 
@@ -281,6 +314,7 @@ auto get_ref_pts(Face<T, IDX, ndim>* faceptr, int order)
                 vtk_grid->InsertNextCell(ref_cell->GetCellType(),
                         ref_cell->GetNumberOfPoints(), pts.data());
             }
+            vtk_grid->SetPoints(vtk_coord);
 
             return std::tuple{vtk_grid, el_pts_offsets, trace_pts_offsets};
         }
@@ -288,11 +322,28 @@ auto get_ref_pts(Face<T, IDX, ndim>* faceptr, int order)
 
         public:
 
-        PVTUWriter(mpi::communicator_type comm)
+        // === Publically Accessible Type Aliases ===
+        using value_type = T;
+
+        // Constructor
+        PVTUWriter(FESpace<T, IDX, ndim, conformity>& fespace, mpi::communicator_type comm)
         : writer{vtkSmartPointer<vtkXMLPUnstructuredGridWriter>::New()},
-          comm{comm}, reference_hypercubes(max_pn), reference_simplices(max_pn),
-          fieldsets{mpi_rank_fieldset{}}
+          reference_hypercubes(max_pn), reference_simplices(max_pn),
+          reference_hypercube_faces(max_pn), reference_simplex_faces(max_pn),
+          fespace{fespace}, fieldsets{mpi_rank_fieldset{}}, comm{comm}, 
+          data_directory{std::filesystem::current_path() / "iceicle_data"}
         {
+            // set up mpi stuffs
+#ifdef ICEICLE_USE_MPI
+            // set VTK to use our MPI communicator
+            vtkSmartPointer<vtkMPICommunicator> vtk_comm = vtkSmartPointer<vtkMPICommunicator>::New();
+            vtkMPICommunicatorOpaqueComm vtk_opaque_comm(&comm);
+            vtk_comm->InitializeExternal(&vtk_opaque_comm);
+            vtkSmartPointer<vtkMPIController> vtk_mpi_ctrl = vtkSmartPointer<vtkMPIController>::New();
+            vtk_mpi_ctrl->SetCommunicator(vtk_comm);
+            writer->SetController(vtk_mpi_ctrl);
+#endif
+
             // set up reference elements
             for(int geo_order = 1; geo_order < max_pn; ++geo_order) {
                 switch(ndim){
@@ -346,6 +397,49 @@ auto get_ref_pts(Face<T, IDX, ndim>* faceptr, int order)
                         break;
                 }
             }
+        }
+
+        /// @brief rename the collection
+        void rename_collection(std::string_view new_name)
+        { collection_name = new_name; }
+
+        /// @brief write the mesh and field values in a .pvtu file
+        /// @param itime the timestep 
+        /// @param time the time value 
+        /// NOTE: the user is responsible for making sure itim and time are unique
+        void write(int itime, T time) const {
+
+            auto [vtk_grid, element_pts_offsets, trace_pts_offsets] =
+                create_vtk_grid();
+
+
+            for(const writeable_fieldset& fieldset : fieldsets){
+                fieldset.write_data(fespace, vtk_grid);
+            }
+
+            // write fields for time and cycle 
+            vtkNew<vtkDoubleArray> t{};
+            t->SetName("TIME");
+            t->SetNumberOfTuples(1);
+            t->SetTuple1(0, time);
+            vtk_grid->GetFieldData()->AddArray(t);
+
+            vtkNew<vtkDoubleArray> c{};
+            c->SetName("CYCLE");
+            c->SetNumberOfTuples(1);
+            c->SetTuple1(0, itime);
+            vtk_grid->GetFieldData()->AddArray(c);
+
+            // write out to file
+            writer->SetNumberOfPieces(mpi::mpi_world_size());
+            writer->SetStartPiece(mpi::mpi_world_rank());
+            writer->SetEndPiece(mpi::mpi_world_rank());
+
+            writer->SetInputData(vtk_grid);
+            writer->SetFileName(((data_directory / collection_name).string() 
+                        + "_" + std::to_string(itime) + ".pvtu").c_str());
+            writer->SetDataModeToAscii();
+            writer->Write();
         }
 
     };
