@@ -1189,7 +1189,9 @@ ns_wall_bc_tag:
             }
 
             inline constexpr 
-            auto dt_from_cfl(real cfl, real reference_length) const noexcept -> real {
+            auto dt_from_cfl(real cfl, real reference_length) const noexcept 
+            -> real 
+            {
                 real dt = (reference_length * cfl) / lambda_max;
                 if(full_ns){
                     real scaling = std::max(visc_max / physics.nondim.Re, visc_max * physics.nondim.e_coeff / physics.nondim.Re);
@@ -1201,6 +1203,73 @@ ns_wall_bc_tag:
                 visc_max = 0;
                 return dt;
             }
+
+            /// @brief we output first the conservative variables and then the 
+            /// rest of the thermodynamic state
+            [[nodiscard]] inline constexpr 
+            auto output_field_names() const noexcept
+            -> std::vector< std::string >
+            {
+                std::vector<std::string> field_names{};
+                field_names.emplace_back("rho");
+                field_names.emplace_back("rhou");
+                if constexpr (ndim > 1)
+                    field_names.emplace_back("rhov");
+                if constexpr (ndim > 2)
+                    field_names.emplace_back("rhow");
+                field_names.emplace_back("rhoE");
+                field_names.emplace_back("gamma");
+                field_names.emplace_back("cp");
+                field_names.emplace_back("u");
+                if constexpr (ndim > 1)
+                    field_names.emplace_back("v");
+                if constexpr (ndim > 2)
+                    field_names.emplace_back("w");
+                field_names.emplace_back("T");
+                field_names.emplace_back("velocity magnitude squared");
+                field_names.emplace_back("p");
+                field_names.emplace_back("csound");
+                field_names.emplace_back("e");
+                field_names.emplace_back("E");
+                field_names.emplace_back("H");
+
+                return field_names;
+            }
+
+            /// @brief from the pde state compute the output fields
+            inline constexpr 
+            auto output_field_func(std::span<real, neq> uin, std::span<real> fieldout) const noexcept
+            -> void 
+            {
+
+                std::array<real, neq> uarr;
+                std::ranges::copy(uin, uarr.begin());
+                ThermodynamicState<real, ndim> state = physics.calc_thermo_state(uarr);
+
+                int i = 0;
+                fieldout[i++] = state.rho;
+                fieldout[i++] = state.momentum[0];
+                if constexpr(ndim > 1)
+                    fieldout[i++] = state.momentum[1];
+                if constexpr(ndim > 2)
+                    fieldout[i++] = state.momentum[2];
+                fieldout[i++] = state.rhoE;
+                fieldout[i++] = state.gamma;
+                fieldout[i++] = state.cp;
+                fieldout[i++] = state.velocity[0];
+                if constexpr(ndim > 1)
+                    fieldout[i++] = state.velocity[1];
+                if constexpr(ndim > 2)
+                    fieldout[i++] = state.velocity[2];
+                fieldout[i++] = state.T;
+                fieldout[i++] = state.vv;
+                fieldout[i++] = state.p;
+                fieldout[i++] = state.csound;
+                fieldout[i++] = state.e;
+                fieldout[i++] = state.E;
+                fieldout[i++] = state.H;
+            }
+
         };
         template< class T, int _ndim, is_eos EoS, VARSET varset>
         Flux(Physics<T, _ndim, EoS, varset>) -> Flux<T, _ndim, EoS, varset>;

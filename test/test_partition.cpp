@@ -16,10 +16,10 @@
 #include <iceicle/disc/burgers.hpp>
 #include <mpi.h>
 #include <numbers>
-#include <petscsys.h>
 #include <string>
 #include <type_traits>
 #ifdef ICEICLE_USE_PETSC 
+#include <petscsys.h>
 #include <iceicle/form_petsc_jacobian.hpp>
 #endif
 using namespace NUMTOOL::TENSOR::FIXED_SIZE;

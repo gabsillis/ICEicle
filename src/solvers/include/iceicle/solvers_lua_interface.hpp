@@ -133,6 +133,9 @@ namespace iceicle::solvers {
 #ifdef ICEICLE_USE_VTK
             if(writer_name && eq_icase(writer_name.value(), "vtk")){
                 io::PVTUWriter pvtu_writer{fespace, mpi::comm_world};
+                io::output_field_function<T, DiscType::nv_comp>
+                    field_func{disc.output_field_names(), disc.output_field_func()};
+                pvtu_writer.register_fields(u, field_func);
                 writer = pvtu_writer;
             }
 #endif

@@ -9,7 +9,6 @@
 #include <memory>
 namespace iceicle::io {
 
-
     /// @brief external function interface for type erasure to write a file 
     /// writes the file with the given time index and time values 
     template<class T, class IDX, int ndim, int conformity>

@@ -89,6 +89,16 @@ namespace iceicle {
                 NUMTOOL::TENSOR::FIXED_SIZE::Tensor<typename FluxT::value_type, FluxT::nv_comp, FluxT::ndim, FluxT::nv_comp, FluxT::ndim>>;
     };
 
+    /// @brief if a conservation law specifies a function and list of names for output fields 
+    /// this can be used to place derived fields in the output
+    template< class FluxT >
+    concept has_output_fields = 
+    requires(FluxT flux, std::span<typename FluxT::value_type, FluxT::nv_comp> uin,
+            std::span<typename FluxT::value_type> field_out) {
+        { flux.output_field_func(uin, field_out) } -> std::same_as<void>;
+        { flux.output_field_names() } -> std::same_as<std::vector< std::string > >;
+    };
+
     template<
         typename T,
         int ndim,
@@ -217,6 +227,42 @@ namespace iceicle {
         ) noexcept : phys_flux{physical_flux}, conv_nflux{convective_numflux}, 
             diff_flux{diffusive_flux} {}
 
+        // ====================
+        // = Output Utilities =
+        // ====================
+
+        /// @brief get the list of names of fields to output to visualization files
+        [[nodiscard]] inline constexpr
+        auto output_field_names()
+        -> std::vector< std::string >
+        {
+            if constexpr(has_output_fields<PFlux>){
+                return phys_flux.output_field_names();
+            } else {
+                // first one is called "u" all others are numbered by eqn index
+                std::vector<std::string> field_names;
+                field_names.emplace_back("u");
+                for(int ieq = 1; ieq < nv_comp; ++ieq){
+                    field_names.emplace_back("u" + std::to_string(ieq));
+                }
+                return field_names;
+            }
+        }
+
+        /// @brief the function to convert pde variables to 
+        /// variables to be output to visualization files
+        [[nodiscard]] inline constexpr 
+        auto output_field_func()
+        -> std::function< void(std::span<T, nv_comp>, std::span<T>) > 
+        {
+            if constexpr(has_output_fields<PFlux>){
+                return [&phys_flux = (this->phys_flux)](std::span<T, nv_comp> uin, std::span<T> fieldout)
+                { return phys_flux.output_field_func(uin, fieldout); };
+            } else {
+                return [](std::span<T, nv_comp> uin, std::span<T> fieldout)
+                { std::ranges::copy(uin, fieldout.begin()); };
+            }
+        }
 
         // ============================
         // = Discretization Interface =

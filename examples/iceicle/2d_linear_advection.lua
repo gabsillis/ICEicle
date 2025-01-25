@@ -3,24 +3,26 @@
 --
 -- Solves a normal distribution bump being transported by linear advection
 
--- PDF of the normal distribution centered at mean with diagonal matrix standard deviation stddev
-local normal_dist = function(mean, stddev)
+-- PDF of the normal distribution centered at (mu_x, mu_y) with standandard deviations sigmax, sigmay
+local normal_dist = function(mu_x, mu_y, sigma_x, sigma_y)
     return function(x, y)
-        return 1.0 / math.sqrt(2 * math.pi * stddev[1] ^ 2) * math.exp(-(x - mean[1]) ^ 2 / (2 * stddev[1] ^ 2))
-            + 1.0 / math.sqrt(2 * math.pi * stddev[2] ^ 2) * math.exp(-(y - mean[2]) ^ 2 / (2 * stddev[2] ^ 2));
+        return 1.0 / (2 * math.pi * sigma_x * sigma_y) * math.exp(
+            -1.0 / 2.0 * (
+                ((x - mu_x) / sigma_x) ^ 2
+                + ((y - mu_y) / sigma_y) ^ 2
+            )
+        );
     end
 end
 
 -- This is the table that gets read in by the program
 -- and will be processed
 return {
-
     -- sepecify the number of dimensions (REQUIRED)
     ndim = 2,
 
     -- create a uniform mesh
     uniform_mesh = {
-
         -- specify the number of elements in each direction
         -- (there is only the x direction in 1D)
         nelem = { 100, 100 },
@@ -34,7 +36,6 @@ return {
 
         -- set the boundary conditions of the sides of the bounding box
         boundary_conditions = {
-
             -- the boundary condition types
             -- in order first by direction, then positive/negative side
             types = {
@@ -82,7 +83,7 @@ return {
     },
 
     -- initial condition: create a gauss hump centered at (0.5, 0.5)
-    initial_condition = normal_dist({ 0.5, 0.5 }, { 0.1, 0.1 }),
+    initial_condition = normal_dist(0.5, 0.5, 0.1, 0.1),
 
     -- specify boundary conditions
     boundary_conditions = {
@@ -95,21 +96,20 @@ return {
     solver = {
         type = "rk3-tvd", -- the type of the solver
         cfl = 0.1,
-        ntime = 1,
-        -- tfinal = 1.0,
-        ivis = 1,
+        -- ntime = 1,
+        tfinal = 1.0,
+        ivis = 100,
     },
 
     -- output
     output = {
-        writer = "vtk",
+        writer = "vtk"
     },
 
     -- post-processing
     post = {
-
-        -- exact solution is the initial condition moved over by 1.0
-        exact_solution = normal_dist({ 1.5, 1.0 }, { 0.1, 0.1 }),
+        -- exact solution is the initial condition moved over at t=1
+        exact_solution = normal_dist(1.5, 1.0, 0.1, 0.1),
 
         -- we want to report the L2 function norm of the error
         -- so we add this to the tasks
