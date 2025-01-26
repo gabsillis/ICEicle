@@ -530,7 +530,11 @@ namespace iceicle {
             traces.reserve(meshptr->faces.size());
             for(const auto& fac : meshptr->faces){
                 // NOTE: assuming element indexing is the same as the mesh still
-                bool is_interior = fac->bctype == BOUNDARY_CONDITIONS::INTERIOR;
+                // NOTE: treating parallel com as interior for element indexing purposes
+                // parallel bdy faces are essentially also interior faces 
+                // aside from being a bit *special* :3
+                bool is_interior = fac->bctype == BOUNDARY_CONDITIONS::INTERIOR 
+                    || fac->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM;
                 ElementType *elptrL = &all_elements[fac->elemL];
                 ElementType *elptrR = (is_interior) ? &all_elements[fac->elemR] : &all_elements[fac->elemL];
                 ElementType& elL = *elptrL;
@@ -562,9 +566,7 @@ namespace iceicle {
                     }
                     ReferenceTraceType &ref_trace = ref_trace_map[trace_key];
                     
-                    if(is_interior || fac->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM){
-                        // parallel bdy faces are essentially also interior faces 
-                        // aside from being a bit *special* :3
+                    if(is_interior){
                         TraceType trace{ fac.get(), &elL, &elR, ref_trace.trace_basis.get(),
                             ref_trace.quadrule.get(), 
                             std::span<const BasisEvaluation<T, ndim>>{ref_trace.evals_l},
@@ -619,8 +621,8 @@ namespace iceicle {
                     // take some extra care to not add the wrong element index
                     auto [jrank, imleft] = decode_mpi_bcflag(trace.face->bcflag);
                     IDX iel_internal = (imleft) ?
-                        meshptr->element_partitioning.inv_p_indices[trace.elL.elidx]
-                        : meshptr->element_partitioning.inv_p_indices[trace.elR.elidx];
+                        trace.elL.elidx
+                        : trace.elR.elidx;
 
                     fac_surr_el_ragged[iel_internal].push_back(itrace);
                 } else {
