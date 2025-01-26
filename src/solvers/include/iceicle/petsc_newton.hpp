@@ -256,14 +256,14 @@ namespace iceicle::solvers {
                 // update u
                 if constexpr (std::is_same_v<ls_type, no_linesearch<T, IDX>>){
                     petsc::VecSpan du_view{du_data};
-                    fespan du{du_view.data(), u.get_layout()};
+                    fespan du{du_view.data(), exclude_ghost(u.get_layout())};
                     axpy(-1.0, du, u);
                 } else {
                     // its linesearchin time!
 
                     // view into the calculated newton step for u and x
                     petsc::VecSpan du_view{du_data};
-                    fespan du{du_view.data(), u.get_layout()};
+                    fespan du{du_view.data(), exclude_ghost(u.get_layout())};
 
                     // u step for linesearch
                     std::vector<T> u_step_storage(u.size());

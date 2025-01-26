@@ -467,21 +467,28 @@ namespace iceicle {
      * @brief compute a vector scalar product and add to a vector 
      * y <= alpha * x + y
      *
+     * performs this operation on the greatest valid subset of indices 
+     * in the intersection of dofs of x and y
+     *
      * @param [in] alpha the scalar to multiply x by
      * @param [in] x the fespan to add 
      * @param [in/out] y the fespan to add to
      */
     template<typename T, class LayoutPolicyx, class LayoutPolicyy>
-    void axpy(T alpha, const fespan<T, LayoutPolicyx> &x, fespan<T, LayoutPolicyy> y){
+    void axpy(T alpha, fespan<T, LayoutPolicyx> x, fespan<T, LayoutPolicyy> y){
+        using index_type = decltype(x)::index_type;
+
         if constexpr(std::is_same_v<LayoutPolicyy, LayoutPolicyx>) {
             // do in a single loop over the 1d index space 
             T *ydata = y.data();
             T *xdata = x.data();
-            for(int i = 0; i < x.size(); ++i){
+            index_type valid_size = std::min(x.size(), y.size());
+            for(index_type i = 0; i < valid_size; ++i){
                 ydata[i] += alpha * xdata[i];
             }
         } else {
-            for(int ielem = 0; ielem < x.nelem(); ++ielem){
+            index_type valid_nelem = std::min(x.nelem(), y.nelem());
+            for(index_type ielem = 0; ielem < valid_nelem; ++ielem){
                 for(int idof = 0; idof < x.ndof(ielem); ++idof){
                     for(int iv = 0; iv < x.nv(); ++iv){
                         y[ielem, idof, iv] += alpha * x[ielem, idof, iv];
@@ -495,21 +502,28 @@ namespace iceicle {
      * @brief compute a vector scalar product and add to a scaled vector
      * y <= alpha * x + beta * y
      *
+     * performs this operation on the greatest valid subset of indices 
+     * in the intersection of dofs of x and y
+     *
      * @param [in] alpha the scalar to multiply x by
      * @param [in] x the fespan to add 
      * @param [in/out] y the fespan to add to
      */
     template<typename T, class LayoutPolicyx, class LayoutPolicyy>
-    void axpby(T alpha, const fespan<T, LayoutPolicyx> &x, T beta, fespan<T, LayoutPolicyy> y){
+    void axpby(T alpha, fespan<T, LayoutPolicyx> x, T beta, fespan<T, LayoutPolicyy> y){
+        using index_type = decltype(x)::index_type;
+
         if constexpr(std::is_same_v<LayoutPolicyy, LayoutPolicyx>) {
             // do in a single loop over the 1d index space 
             T *ydata = y.data();
             T *xdata = x.data();
-            for(int i = 0; i < x.size(); ++i){
+            index_type valid_size = std::min(x.size(), y.size());
+            for(int i = 0; i < valid_size; ++i){
                 ydata[i] = alpha * xdata[i] + beta * ydata[i];
             }
         } else {
-            for(int ielem = 0; ielem < x.nelem(); ++ielem){
+            index_type valid_nelem = std::min(x.nelem(), y.nelem());
+            for(int ielem = 0; ielem < valid_nelem; ++ielem){
                 for(int idof = 0; idof < x.ndof(ielem); ++idof){
                     for(int iv = 0; iv < x.nv(); ++iv){
                         y[ielem, idof, iv] = alpha * x[ielem, idof, iv] + beta * y[ielem, idof, iv];
@@ -522,17 +536,23 @@ namespace iceicle {
     /**
      * @brief copy the data from fespan x to fespan y
      *
+     * performs this operation on the greatest valid subset of indices 
+     * in the intersection of dofs of x and y
+     *
      * @param [in] x the fespan to copy from
      * @param [out] y the fespan to copy to
      */
     template<typename T, class LayoutPolicyx, class LayoutPolicyy>
-    void copy_fespan(const fespan<T, LayoutPolicyx> &x, fespan<T, LayoutPolicyy> y){
+    void copy_fespan(fespan<T, LayoutPolicyx> x, fespan<T, LayoutPolicyy> y){
+        using index_type = decltype(x)::index_type;
         if constexpr(std::is_same_v<LayoutPolicyy, LayoutPolicyx>) {
+            index_type valid_size = std::min(x.size(), y.size());
             // do in a single loop over the 1d index space 
-            std::copy_n(x.data(), x.size(), y.data());
+            std::copy_n(x.data(), valid_size, y.data());
         } else {
+            index_type valid_nelem = std::min(x.nelem(), y.nelem());
             // TODO: more assurances that x and y still share a space
-            for(int ielem = 0; ielem < x.nelem(); ++ielem){
+            for(int ielem = 0; ielem < valid_nelem; ++ielem){
                 for(int idof = 0; idof < x.ndof(ielem); ++idof){
                     for(int iv = 0; iv < x.nv(); ++iv){
                         y[ielem, idof, iv] = x[ielem, idof, iv];

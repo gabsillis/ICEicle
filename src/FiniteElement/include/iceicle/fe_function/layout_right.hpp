@@ -237,7 +237,12 @@ namespace iceicle {
         [[nodiscard]] inline constexpr 
         auto ndof() const noexcept
         -> size_type
-        { return map_ref.size(); }
+        { 
+            if constexpr (include_ghost)
+                return map_ref.size(); 
+            else 
+                return dof_partitioning.owned_range_size(mpi::mpi_world_rank());
+        }
 
         /// @brief get the number of degrees of freedom for the given element 
         /// @param ielem the element index
