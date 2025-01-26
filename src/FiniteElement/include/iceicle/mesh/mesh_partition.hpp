@@ -433,7 +433,8 @@ namespace iceicle {
             MPI_Recv(&bctype_int, 1, MPI_INT, 0, 0, mpi::comm_world, &status);
             while(bctype_int != -1){
                 BOUNDARY_CONDITIONS bctype = static_cast<BOUNDARY_CONDITIONS>(bctype_int);
-                int bcflag, nnode;
+                int bcflag;
+                std::size_t nnode;
                 MPI_Recv(&bcflag, 1, MPI_INT, 0, 1, mpi::comm_world, &status);
                 MPI_Recv(&nnode, 1, mpi_get_type<std::size_t>(), 0, 2, mpi::comm_world, &status);
                 std::vector<IDX> pnodes(nnode);

@@ -618,11 +618,11 @@ namespace iceicle {
                 if(trace.face->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM){
                     // take some extra care to not add the wrong element index
                     auto [jrank, imleft] = decode_mpi_bcflag(trace.face->bcflag);
-                    if(imleft){
-                        fac_surr_el_ragged[trace.elL.elidx].push_back(itrace);
-                    } else {
-                        fac_surr_el_ragged[trace.elR.elidx].push_back(itrace);
-                    }
+                    IDX iel_internal = (imleft) ?
+                        meshptr->element_partitioning.inv_p_indices[trace.elL.elidx]
+                        : meshptr->element_partitioning.inv_p_indices[trace.elR.elidx];
+
+                    fac_surr_el_ragged[iel_internal].push_back(itrace);
                 } else {
                     fac_surr_el_ragged[trace.elL.elidx].push_back(itrace);
                     fac_surr_el_ragged[trace.elR.elidx].push_back(itrace);
