@@ -9,6 +9,7 @@
 #include "iceicle/dat_writer.hpp"
 #include "iceicle/disc/bc_lua_interface.hpp"
 #include "iceicle/disc/burgers.hpp"
+#include "iceicle/disc/conservation_law_lua_interface.hpp"
 #include "iceicle/disc/navier_stokes.hpp"
 #include "iceicle/fespace/fespace_lua_interface.hpp"
 #include "iceicle/geometry/face.hpp"
@@ -207,81 +208,11 @@ void setup(sol::table script_config, cli_parser cli_args) {
     sol::table cons_law_tbl = script_config["conservation_law"];
 
     if (eq_icase(cons_law_tbl["name"].get<std::string>(), "burgers")) {
-
-      // get the coefficients for burgers equation
-      BurgersCoefficients<T, ndim> burgers_coeffs{};
-      sol::optional<T> mu_input = cons_law_tbl["mu"];
-      if (mu_input)
-        burgers_coeffs.mu = mu_input.value();
-
-      // WARNING: for some reason in release mode
-      // if we create these tables from cons_law_tbl
-      // the second one won't read properly
-      sol::optional<sol::table> b_adv_input =
-          script_config["conservation_law"]["b_adv"];
-      sol::optional<sol::table> a_adv_input =
-          script_config["conservation_law"]["a_adv"];
-      if (a_adv_input.has_value()) {
-        for (int idim = 0; idim < ndim; ++idim)
-          burgers_coeffs.a[idim] =
-              script_config["conservation_law"]["a_adv"][idim + 1];
-      }
-      if (b_adv_input.has_value()) {
-        for (int idim = 0; idim < ndim; ++idim)
-          burgers_coeffs.b[idim] =
-              script_config["conservation_law"]["b_adv"][idim + 1];
-      }
-
-      std::cout << burgers_coeffs.mu 
-                << " " << burgers_coeffs.a[0] 
-                << " " << burgers_coeffs.b[0] 
-            << std::endl;
-      // create the discretization
-      BurgersFlux physical_flux{burgers_coeffs};
-      BurgersUpwind convective_flux{burgers_coeffs};
-      BurgersDiffusionFlux diffusive_flux{burgers_coeffs};
-      ConservationLawDDG disc{std::move(physical_flux),
-                              std::move(convective_flux),
-                              std::move(diffusive_flux)};
-      disc.field_names = std::vector<std::string>{"u"};
-      disc.residual_names = std::vector<std::string>{"residual"};
-
+      ConservationLawDDG disc{lua::set_up_burgers<T, ndim>(cons_law_tbl)};
       initialize_and_solve(script_config, fespace, disc);
-
     } else if (eq_icase(cons_law_tbl["name"].get<std::string>(),
                         "spacetime-burgers")) {
-      static constexpr int ndim_space = ndim - 1;
-      // get the coefficients for burgers equation
-      BurgersCoefficients<T, ndim_space> burgers_coeffs{};
-      sol::optional<T> mu_input = cons_law_tbl["mu"];
-      if (mu_input)
-        burgers_coeffs.mu = mu_input.value();
-
-      sol::optional<sol::table> b_adv_input =
-          script_config["conservation_law"]["b_adv"];
-      sol::optional<sol::table> a_adv_input =
-          script_config["conservation_law"]["a_adv"];
-      if (a_adv_input.has_value()) {
-        for (int idim = 0; idim < ndim_space; ++idim)
-          burgers_coeffs.a[idim] =
-              script_config["conservation_law"]["a_adv"][idim + 1];
-      }
-      if (b_adv_input.has_value()) {
-        for (int idim = 0; idim < ndim_space; ++idim)
-          burgers_coeffs.b[idim] =
-              script_config["conservation_law"]["b_adv"][idim + 1];
-      }
-      std::cout << burgers_coeffs.b[0] << std::endl;
-
-      // create the discretization
-      SpacetimeBurgersFlux physical_flux{burgers_coeffs};
-      SpacetimeBurgersUpwind convective_flux{burgers_coeffs};
-      SpacetimeBurgersDiffusion diffusive_flux{burgers_coeffs};
-      ConservationLawDDG disc{std::move(physical_flux),
-                              std::move(convective_flux),
-                              std::move(diffusive_flux)};
-      disc.field_names = std::vector<std::string>{"u"};
-      disc.residual_names = std::vector<std::string>{"residual"};
+      ConservationLawDDG disc{lua::set_up_st_burgers<T, ndim>(cons_law_tbl)};
       initialize_and_solve(script_config, fespace, disc);
 
     } else if (eq_icase_any(cons_law_tbl["name"].get<std::string>(),
