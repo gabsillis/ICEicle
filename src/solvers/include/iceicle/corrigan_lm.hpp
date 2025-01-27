@@ -325,6 +325,7 @@ namespace iceicle::solvers {
                 VecSetSizes(Jx, local_res_size, PETSC_DETERMINE);
                 VecSetFromOptions(Jx);
 
+                subproblem_ctx.comm = comm;
                 subproblem_ctx.J = jac;
                 subproblem_ctx.Jx = Jx;
                 subproblem_ctx.npde = local_u_size;
@@ -359,7 +360,8 @@ namespace iceicle::solvers {
             PetscCallAbort(comm, KSPGetPC(ksp, &pc));
 
             if(explicitly_form_subproblem){
-                PCSetType(pc, PCILU);
+                // seems to be best option for parallel out of default preconditioners
+                PCSetType(pc, PCASM); 
             } else {
                 PCSetType(pc, PCNONE);
             }
@@ -445,19 +447,25 @@ namespace iceicle::solvers {
                     MatProductNumeric(subproblem_mat);
 
                     // Regularization
+                    PetscInt M, N;
+                    MatGetSize(jac, &M, &N);
+                    std::vector<T> lambda_p(N);
+                    IDX owned_pde_size = u_layout.owned_size(comm);
+                    IDX owned_geo_size = geo_layout.size();
                     Vec lambda;
                     VecCreate(comm, &lambda);
-                    VecSetSizes(lambda, u_layout.size() + geo_layout.size(), PETSC_DETERMINE);
+                    VecSetSizes(lambda, owned_pde_size + owned_geo_size, PETSC_DETERMINE);
                     VecSetFromOptions(lambda);
                     { // lambda read scope
                         petsc::VecSpan lambda_view{lambda};
                         PetscCallAbort(comm,
-                                MatGetColumnNorms(jac, NORM_2, lambda_view.data()));
+                                MatGetColumnNorms(jac, NORM_2, lambda_p.data()));
 
+                        // TODO: do we wanna use column norms??
                         // diagonal regularization
-                        for(PetscInt i = 0; i < u_layout.size(); ++i)
+                        for(PetscInt i = 0; i < owned_pde_size; ++i)
                             { lambda_view[i] *= lambda_u; }
-                        for(PetscInt i = u_layout.size(); i < u_layout.size() + geo_layout.size(); ++i)
+                        for(PetscInt i = owned_pde_size; i < owned_pde_size + owned_geo_size; ++i)
                             { lambda_view[i] *= lambda_b; }
                     } // end lambda read scope
                     MatDiagonalSet(subproblem_mat, lambda, ADD_VALUES);
@@ -569,7 +577,7 @@ namespace iceicle::solvers {
                 // update u 
                 if constexpr (std::is_same_v<ls_type, no_linesearch<T, IDX>>){
                     petsc::VecSpan du_view{du_data};
-                    fespan du{du_view.data(), u.get_layout()};
+                    fespan du{du_view.data(), exclude_ghost(u.get_layout())};
                     axpy(-1.0, du, u);
 
                     // x update
@@ -615,7 +623,7 @@ namespace iceicle::solvers {
                         // === Compute the Update ===
 
                         petsc::VecSpan du_view{du_data};
-                        fespan du{du_view.data(), u.get_layout()};
+                        fespan du{du_view.data(), exclude_ghost(u.get_layout())};
                         axpy(-alpha_arg, du, u_step);
 
                         // x update
@@ -659,7 +667,7 @@ namespace iceicle::solvers {
                     if(!reset_for_element_inversion && rnorm_step < 10 * local_rnorm_old ){
                         // Perform the linesearch update
                         petsc::VecSpan du_view{du_data};
-                        fespan du{du_view.data(), u.get_layout()};
+                        fespan du{du_view.data(), exclude_ghost(u.get_layout())};
                         axpy(-alpha, du, u);
 
                         // x update

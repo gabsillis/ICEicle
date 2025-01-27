@@ -127,9 +127,21 @@ return {
 	},
 
 	-- solver
+
+	-- Option 1: Newton's Method with Petsc linear solver
+	--	solver = {
+	--		ivis = 1,
+	--		type = "newton",
+	--	},
+
+	-- Option 2: Regularized Gauss-Newton/Levenberg-Marquard without linesearch
+	--           using Petsc for linear solver
 	solver = {
 		ivis = 1,
-		type = "newton",
+		form_subproblem_mat = true,
+		type = "lm",
+		lambda_u = 1e-10,
+		kmax = 10,
 	},
 
 	-- output
