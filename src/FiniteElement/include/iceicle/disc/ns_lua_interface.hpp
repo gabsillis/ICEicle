@@ -254,6 +254,7 @@ using physics_options = std::variant<
     Physics<real, ndim, CaloricallyPerfectEoS<real, ndim>, VARSET::RHO_U_T>
 >;
 
+/// @brief set up and get the Physics that will be used in the NS conservation law
 template< class real, int ndim >
 [[nodiscard]] inline 
 auto get_physics(sol::table cons_law_tbl) 
@@ -274,13 +275,14 @@ auto get_physics(sol::table cons_law_tbl)
         return std::nullopt;
     }
 
+    // set up the viscosity function
     auto visc_opt = select_viscosity<real>(cons_law_tbl, ref);
     if(!visc_opt){
         util::AnomalyLog::log_anomaly("Error initializing viscosity function");
         return std::nullopt;
     }
 
-    eos_opt.value() >> tmp::select_fcn{
+    std::optional<physics_options<real, ndim>> ret = std::visit(tmp::select_fcn{
         [&](const auto& eos) 
         -> std::optional<physics_options<real, ndim>> 
         {
@@ -303,9 +305,9 @@ auto get_physics(sol::table cons_law_tbl)
             // Default: Conservative variables
             return Physics<real, ndim, eos_t, VARSET::CONSERVATIVE>{ref, eos, visc_opt.value()};
         }
-    };
+    }, eos_opt.value());
 
-    return std::nullopt;
+    return ret;
 }
 
 } // namespace lua

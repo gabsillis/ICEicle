@@ -78,6 +78,7 @@ template <class T, class IDX, int ndim, int conformity, class pflux, class cflux
 void initialize_and_solve(
     sol::table config_tbl, FESpace<T, IDX, ndim, conformity> &fespace,
     ConservationLawDDG<T, ndim, pflux, cflux, dflux> &conservation_law) {
+  using DiscType = ConservationLawDDG<T, ndim, pflux, cflux, dflux>;
 
   // ==============================
   // = Set Discretization Options =
@@ -107,11 +108,12 @@ void initialize_and_solve(
     dat_writer.write_dat(0, 0.0);
   }
   if constexpr (ndim == 2 || ndim == 3) {
-    io::PVDWriter<T, IDX, ndim, conformity> pvd_writer{};
-    pvd_writer.register_fespace(fespace);
-    pvd_writer.register_fields(u, conservation_law.field_names);
-    pvd_writer.collection_name = "initial_condition";
-    pvd_writer.write_vtu(0, 0.0);
+    io::PVTUWriter<T, IDX, ndim, conformity> vtk_writer{fespace, mpi::comm_world};
+    io::output_field_function<T, DiscType::nv_comp>
+        field_func{conservation_law.output_field_names(), conservation_law.output_field_func()};
+    vtk_writer.register_fields(u, field_func);
+    vtk_writer.rename_collection("initial_condition");
+    vtk_writer.write(0, 0.0);
   }
 
   // ==================================
@@ -223,7 +225,9 @@ void setup(sol::table script_config, cli_parser cli_args) {
       if(!physics_opt){
         AnomalyLog::log_anomaly("Could not set up physics for NS");
         return;
-        physics_opt.value() >> tmp::select_fcn{
+      }
+      std::visit(
+        tmp::select_fcn{
             [&](auto&& phys) -> void { 
                 navier_stokes::Physics physics{phys};
 
@@ -247,14 +251,16 @@ void setup(sol::table script_config, cli_parser cli_args) {
                     navier_stokes::VanLeer numflux{physics};
                     ConservationLawDDG disc{
                         std::move(flux), std::move(numflux), std::move(diffusion_flux)};
-                        initialize_and_solve(script_config, fespace, disc);
+                    initialize_and_solve(script_config, fespace, disc);
+                    return;
                 }
 
                 util::AnomalyLog::log_anomaly("Could not construct NS conservation law");
                 return;
             }
-        };
-      }
+        }, 
+        physics_opt.value()
+    );
 //      } else {
 //        // check to make sure no isothermal boundary conditions are present
 //        for(auto trace : fespace.get_boundary_traces()){
