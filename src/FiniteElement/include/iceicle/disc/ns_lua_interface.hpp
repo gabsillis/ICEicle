@@ -2,8 +2,10 @@
 #include "iceicle/anomaly_log.hpp"
 #include "iceicle/string_utils.hpp"
 #include <iceicle/disc/navier_stokes.hpp>
+#include <iceicle/tmp_utils.hpp>
 #include <optional>
 #include <sol/sol.hpp>
+#include <type_traits>
 
 namespace iceicle {
 namespace navier_stokes {
@@ -84,7 +86,7 @@ auto parse_free_stream(sol::table free_stream_table, T gamma, T Rgas)
 template <class real, int ndim>
 [[nodiscard]] inline
 auto ref_parameters(sol::table cons_law_tbl)
--> ReferenceParameters<real>
+-> std::optional<ReferenceParameters<real>>
 {
     using namespace util;
 
@@ -94,6 +96,11 @@ auto ref_parameters(sol::table cons_law_tbl)
 
     if(eq_icase("free_stream", ref_param_name_opt.value_or(std::string{""}))) {
 
+        // TODO: maybe use EoS instead of direct gamma and Rgas
+        sol::table eos_tbl = cons_law_tbl["eos"];
+        real gamma = eos_tbl.get_or("gamma", 1.4);
+        real Rgas = eos_tbl.get_or("Rgas", 287.052874);
+
         // get the free stream quantities with error handling
         sol::optional<sol::table> fs_tbl_opt = cons_law_tbl["free_stream"];
         if(!fs_tbl_opt){
@@ -102,7 +109,7 @@ auto ref_parameters(sol::table cons_law_tbl)
           return std::nullopt;
         }
         std::optional<FreeStream<real, ndim>> fs_opt 
-          = parse_free_stream<real, ndim>(fs_tbl_opt.value());
+          = parse_free_stream<real, ndim>(fs_tbl_opt.value(), gamma, Rgas);
 
         if(!fs_opt){
           AnomalyLog::log_anomaly("free_stream quantities could not be parsed."
@@ -198,8 +205,8 @@ auto select_viscosity(sol::table cons_law_tbl, ReferenceParameters<real> ref)
     if(util::eq_icase_any(visc_name, "sutherlands dimensional")){
         Sutherlands<real> visc{};
         visc.mu_0 = visc_tbl.get_or("mu_0", visc.mu_0);
-        visc.T_0 = visc_tbl.get_or("T_0", visc.mu_0);
-        visc.T_S = visc_tbl.get_or("T_S", visc.mu_0);
+        visc.T_0 = visc_tbl.get_or("T_0", visc.T_0);
+        visc.T_s = visc_tbl.get_or("T_s", visc.T_s);
         return visc;
     }
 
@@ -224,7 +231,10 @@ auto select_eos(sol::table cons_law_tbl)
         std::string name = eos_tbl.get_or("name", std::string{""});
         if(util::eq_icase_any(name, "ideal", "ideal gas", "ideal_gas", 
                     "calorically perfect", "calorically_perfect")){
-            return CaloricallyPerfectEoS<real, ndim>{};
+            CaloricallyPerfectEoS<real, ndim> eos{};
+            eos.gamma = eos_tbl.get_or("gamma", eos.gamma);
+            eos.Rgas = eos_tbl.get_or("Rgas", eos.Rgas);
+            return eos;
         } else {
             util::AnomalyLog::log_anomaly(
                 "EoS name: " + name + "not recognized");
@@ -234,6 +244,68 @@ auto select_eos(sol::table cons_law_tbl)
 
     // Default: CaloricallyPerfectEoS
     return CaloricallyPerfectEoS<real, ndim>{};
+}
+
+/// @brief variant of all the Physics options 
+template< class real, int ndim >
+using physics_options = std::variant<
+    Physics<real, ndim, CaloricallyPerfectEoS<real, ndim>, VARSET::CONSERVATIVE>,
+    Physics<real, ndim, CaloricallyPerfectEoS<real, ndim>, VARSET::RHO_U_P>,
+    Physics<real, ndim, CaloricallyPerfectEoS<real, ndim>, VARSET::RHO_U_T>
+>;
+
+template< class real, int ndim >
+[[nodiscard]] inline 
+auto get_physics(sol::table cons_law_tbl) 
+-> std::optional<physics_options<real, ndim>>
+{
+    // Get the reference quantities
+    auto ref_opt = ref_parameters<real, ndim>(cons_law_tbl);
+    if(!ref_opt){
+        util::AnomalyLog::log_anomaly("Error initializing reference quantities");
+        return std::nullopt;
+    }
+    ReferenceParameters<real> ref = ref_opt.value();
+
+    // get the equation of state 
+    auto eos_opt = select_eos<real, ndim>(cons_law_tbl);
+    if(!eos_opt){
+        util::AnomalyLog::log_anomaly("Error initializing Equation of State");
+        return std::nullopt;
+    }
+
+    auto visc_opt = select_viscosity<real>(cons_law_tbl, ref);
+    if(!visc_opt){
+        util::AnomalyLog::log_anomaly("Error initializing viscosity function");
+        return std::nullopt;
+    }
+
+    eos_opt.value() >> tmp::select_fcn{
+        [&](const auto& eos) 
+        -> std::optional<physics_options<real, ndim>> 
+        {
+            using eos_t = std::remove_cvref_t<decltype(eos)>;
+            sol::optional<std::string> varset_name_opt = cons_law_tbl["varset"];
+            if(varset_name_opt){
+                std::string varset_name = varset_name_opt.value();
+                if(util::eq_icase(varset_name, "conservative"))
+                    return Physics<real, ndim, eos_t, VARSET::CONSERVATIVE>{ref, eos, visc_opt.value()};
+                if(util::eq_icase_any(varset_name, "rho_u_p", "primitive pressure"))
+                    return Physics<real, ndim, eos_t, VARSET::RHO_U_P>{ref, eos, visc_opt.value()};
+                if(util::eq_icase_any(varset_name, "rho_u_t", "primitive temperature"))
+                    return Physics<real, ndim, eos_t, VARSET::RHO_U_T>{ref, eos, visc_opt.value()};
+
+                // should have found varset by now 
+                util::AnomalyLog::log_anomaly("unrecognized varset: " + varset_name);
+                return std::nullopt;
+            }
+
+            // Default: Conservative variables
+            return Physics<real, ndim, eos_t, VARSET::CONSERVATIVE>{ref, eos, visc_opt.value()};
+        }
+    };
+
+    return std::nullopt;
 }
 
 } // namespace lua

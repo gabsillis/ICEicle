@@ -179,7 +179,7 @@ namespace iceicle {
                 .rho = rho_inf,
                 .u = u_inf,
                 .e = u_inf * u_inf,
-                .p = rho_inf * u_inf * u_inf
+                .p = rho_inf * u_inf * u_inf,
                 .T = 1,
                 .mu = 1
             };
@@ -217,10 +217,10 @@ namespace iceicle {
 
         /// @brief viscosity functions take 1 argument (temperature)
         /// and return a viscosity
-        template<class visc_fcn>
+        template<class visc_fcn, class real>
         concept is_viscosity_fcn = 
-        requires(const visc_fcn visc, typename visc_fcn::real_t T) {
-            {std::invoke(visc, T)} -> std::same_as<typename visc_fcn::real_t>;
+        requires(const visc_fcn visc, real T) {
+            {std::invoke(visc, T)} -> std::same_as<real>;
         };
 
         /// @brief viscosity function that just returns the value given
@@ -608,9 +608,9 @@ namespace iceicle {
                     for(int jdim = 0; jdim < ndim; ++jdim){
                         grad_E[jdim] = grad_temp[jdim] * T_coeff * nondim.Eu / state.gamma;
                         for(int kdim = 0; kdim < ndim; ++kdim){
-                            grad_E += state.velocity[kdim] * grad_vel[kdim][jdim];
+                            grad_E[jdim] += state.velocity[kdim] * grad_vel[kdim][jdim];
                         }
-                        grad_E *= nondim.e_coeff * state.rho;
+                        grad_E[jdim] *= nondim.e_coeff * state.rho;
                     }
                     return FlowStateGradients<real, ndim>{grad_vel, grad_E};
                 } else { // variable_set = VARSET::RHO_U_P
@@ -628,7 +628,7 @@ namespace iceicle {
                     Vector grad_temp;
                     for(int jdim = 0; jdim < ndim; ++jdim){
                         // quotient rule
-                        grad_temp[jdim] = (gradu[ip, jdim] * state.rho - gradu[irho] * state.p)
+                        grad_temp[jdim] = (gradu[ip, jdim] * state.rho - gradu[irho, jdim] * state.p)
                             / SQUARED(state.rho) * gamma / (gamma - 1) / T_coeff;
                     }
 
@@ -637,9 +637,9 @@ namespace iceicle {
                     for(int jdim = 0; jdim < ndim; ++jdim){
                         grad_E[jdim] = grad_temp[jdim] * T_coeff * nondim.Eu / state.gamma;
                         for(int kdim = 0; kdim < ndim; ++kdim){
-                            grad_E += state.velocity[kdim] * grad_vel[kdim][jdim];
+                            grad_E[jdim] += state.velocity[kdim] * grad_vel[kdim][jdim];
                         }
-                        grad_E *= nondim.e_coeff * state.rho;
+                        grad_E[jdim] *= nondim.e_coeff * state.rho;
                     }
                     return FlowStateGradients<real, ndim>{grad_vel, grad_E};
                 }
@@ -686,7 +686,7 @@ namespace iceicle {
             Physics(
                 ReferenceParameters<real> ref, /// @param reference parameters for nondimensionalization
                 EoS eos,          /// @param the equation of state
-                is_viscosity_fcn auto viscosity, /// @param the viscosity function
+                is_viscosity_fcn<real> auto viscosity, /// @param the viscosity function
                 real Pr = 0.72       /// @param Prandtl number
             ) : Pr{Pr}, ref{ref}, viscosity{viscosity},
                 nondim{create_nondim(ref)}, eos{eos}
@@ -1336,7 +1336,7 @@ ns_wall_bc_tag:
                     real T_coeff = state.cp * physics.ref.T * physics.ref.rho / physics.ref.p;
 
                     // get the shear stress
-                    Tensor<real, 2, 2> tau = physics.calc_shear_stress(state, state_grads);
+                    Tensor<real, ndim, ndim> tau = physics.calc_shear_stress(state, state_grads);
 
                     // get the heat flux 
                     Vector q = physics.calc_heat_flux(state, state_grads);

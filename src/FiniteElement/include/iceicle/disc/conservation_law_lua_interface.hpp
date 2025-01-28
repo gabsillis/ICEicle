@@ -2,7 +2,10 @@
 
 #include <iceicle/disc/burgers.hpp>
 #include <iceicle/disc/navier_stokes.hpp>
+#include "iceicle/anomaly_log.hpp"
 #include "iceicle/disc/conservation_law.hpp"
+#include "iceicle/disc/ns_lua_interface.hpp"
+#include "iceicle/string_utils.hpp"
 #include <sol/sol.hpp>
 
 
@@ -25,14 +28,14 @@ namespace iceicle::lua {
           sol::optional<sol::table> a_adv_input =
               cons_law_tbl["a_adv"];
           if (a_adv_input.has_value()) {
-            for (int idim = 0; idim < ndim; ++idim)
-              burgers_coeffs.a[idim] =
-                  cons_law_tbl["a_adv"][idim + 1];
+              for (int idim = 0; idim < ndim; ++idim)
+                  burgers_coeffs.a[idim] =
+                      cons_law_tbl["a_adv"][idim + 1];
           }
           if (b_adv_input.has_value()) {
-            for (int idim = 0; idim < ndim; ++idim)
-              burgers_coeffs.b[idim] =
-                  cons_law_tbl["b_adv"][idim + 1];
+              for (int idim = 0; idim < ndim; ++idim)
+                  burgers_coeffs.b[idim] =
+                      cons_law_tbl["b_adv"][idim + 1];
           }
 
           std::cout << burgers_coeffs.mu 
@@ -63,21 +66,17 @@ namespace iceicle::lua {
           BurgersCoefficients<T, ndim_space> burgers_coeffs{};
           sol::optional<T> mu_input = cons_law_tbl["mu"];
           if (mu_input)
-            burgers_coeffs.mu = mu_input.value();
+              burgers_coeffs.mu = mu_input.value();
 
-          sol::optional<sol::table> b_adv_input =
-              cons_law_tbl["b_adv"];
-          sol::optional<sol::table> a_adv_input =
-              cons_law_tbl["a_adv"];
+          sol::optional<sol::table> b_adv_input = cons_law_tbl["b_adv"];
+          sol::optional<sol::table> a_adv_input = cons_law_tbl["a_adv"];
           if (a_adv_input.has_value()) {
-            for (int idim = 0; idim < ndim_space; ++idim)
-              burgers_coeffs.a[idim] =
-                  cons_law_tbl["a_adv"][idim + 1];
+              for (int idim = 0; idim < ndim_space; ++idim)
+                  burgers_coeffs.a[idim] = cons_law_tbl["a_adv"][idim + 1];
           }
           if (b_adv_input.has_value()) {
-            for (int idim = 0; idim < ndim_space; ++idim)
-              burgers_coeffs.b[idim] =
-                  cons_law_tbl["b_adv"][idim + 1];
+              for (int idim = 0; idim < ndim_space; ++idim)
+                  burgers_coeffs.b[idim] = cons_law_tbl["b_adv"][idim + 1];
           }
           std::cout << burgers_coeffs.b[0] << std::endl;
 
@@ -93,5 +92,4 @@ namespace iceicle::lua {
 
           return disc;
     }
-
 } // namespace iceicle::lua
