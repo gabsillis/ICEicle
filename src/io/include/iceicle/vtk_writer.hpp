@@ -211,6 +211,8 @@ namespace iceicle::io {
                     point_data.push_back(field_pt_array);
                 }
 
+                // storage for solution evaluations
+                std::vector<T> u(fedata.nv());
                 std::size_t i_vtk_poin = 0;
                 for(const FiniteElement<T, IDX, ndim>& el : fespace.elements){
                     auto [vtk_cell, ref_pts] = get_ref_pts(el.trans, el.coord_el, el.basis->getPolynomialOrder());
@@ -222,7 +224,6 @@ namespace iceicle::io {
                             el.eval_basis(refpt, basis_data.data());
 
                         // compute the pde variables
-                        std::vector<T> u(fedata.nv());
                         std::ranges::fill(u, 0.0);
                         for(int ieq = 0; ieq < fedata.nv(); ++ieq){
                             for(std::size_t idof = 0; idof < el.nbasis(); ++idof){
@@ -530,9 +531,9 @@ namespace iceicle::io {
         /// @param field_func representation of output data fields to write and conversion from pde variables
         template< int neq, class LayoutPolicy, class AccessorPolicy >
         void register_fields(
-            fespan<T, LayoutPolicy, AccessorPolicy>& fedata,
+            fespan<T, LayoutPolicy, AccessorPolicy> fedata,
             output_field_function<T, neq>& field_func
-        ) { fieldsets.push_back(data_fieldset{field_func, fedata}); }
+        ) { fieldsets.push_back(data_fieldset{field_func, exclude_ghost(fedata)}); }
 
     };
 

@@ -112,7 +112,7 @@ namespace iceicle {
             {
                 static_assert(std::is_same_v<std::ranges::range_value_t<decltype(data_range)>, T>, "value type must match");
                 T sz = std::ranges::size(data_range);
-                if(sz < dof_map.size()){
+                if(sz < size()){
                     util::AnomalyLog::log_anomaly(util::Anomaly{
                         "Provided data range cannot support the extent of the layout",
                         util::general_anomaly_tag{}});
@@ -127,8 +127,10 @@ namespace iceicle {
                       _layout{dof_map}, _accessor{_accessor}
             {
                 static_assert(std::is_same_v<std::ranges::range_value_t<decltype(data_range)>, T>, "value type must match");
-                util::AnomalyLog::check(std::ranges::size(data_range) < dof_map.size(),
-                    util::Anomaly{"Provided data range cannot support the extent of the layout", util::general_anomaly_tag{}});
+                util::AnomalyLog::check(std::ranges::size(data_range) >= size(),
+                    util::Anomaly{"Provided data range cannot support the extent of the layout"
+                        " data range size: " + std::to_string(std::ranges::size(data_range))
+                        + " | layout_size: " + std::to_string(size()), util::general_anomaly_tag{}});
             }
 
             template<typename... LayoutArgsT>

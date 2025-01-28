@@ -644,11 +644,12 @@ namespace iceicle::solvers {
                             if(residuals_writer) residuals_writer.write(k, (T) k);
 
                             // get the MDG residuals 
-                            petsc::VecSpan res_span{res_data};
-                            dofspan ic_residual{res_span.data() + u.size(), ic_layout};
-                            auto res_mdg_dof_view = dof_view(res_mdg_h1);
-                            extract_icespan(ic_residual, res_mdg_dof_view);
-                            writer_mdg.write(k, (T) k);
+                            // TODO: need ownership span model
+//                            petsc::VecSpan res_span{res_data};
+//                            dofspan ic_residual{res_span.data() + u.size(), ic_layout};
+//                            auto res_mdg_dof_view = dof_view(res_mdg_h1);
+//                            extract_icespan(ic_residual, res_mdg_dof_view);
+//                            writer_mdg.write(k, (T) k);
                         };
 
                         // === Check for invalid state ===
