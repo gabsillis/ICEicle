@@ -57,7 +57,7 @@ namespace iceicle {
         /// @brief the number of dimensions
         static constexpr int ndim = _ndim;
 
-        BurgersCoefficients<T, ndim>& coeffs;
+        BurgersCoefficients<T, ndim> coeffs;
 
         mutable T lambda_max = 0.0;
 
@@ -124,7 +124,7 @@ namespace iceicle {
         /// @brief the number of vector components
         static constexpr std::size_t nv_comp = 1;
 
-        BurgersCoefficients<T, ndim>& coeffs;
+        BurgersCoefficients<T, ndim> coeffs;
 
         /**
          * @brief compute the convective numerical flux normal to the interface
@@ -192,7 +192,7 @@ namespace iceicle {
         static constexpr 
         auto neq() -> std::size_t { return nv_comp; }
 
-        BurgersCoefficients<T, ndim>& coeffs;
+        BurgersCoefficients<T, ndim> coeffs;
 
 
         /**
@@ -280,7 +280,7 @@ namespace iceicle {
         static constexpr int ndim_space = ndim - 1;
         static constexpr int idim_time = ndim - 1;
 
-        BurgersCoefficients<T, ndim_space>& coeffs;
+        BurgersCoefficients<T, ndim_space> coeffs;
 
         mutable T lambda_max = 0.0;
 
@@ -357,7 +357,7 @@ namespace iceicle {
         static constexpr int ndim_space = ndim - 1;
         static constexpr int idim_time = ndim - 1;
 
-        BurgersCoefficients<T, ndim_space>& coeffs;
+        BurgersCoefficients<T, ndim_space> coeffs;
 
         /**
          * @brief compute the convective numerical flux normal to the interface
@@ -433,7 +433,7 @@ namespace iceicle {
         static constexpr int ndim_space = ndim - 1;
         static constexpr int idim_time = ndim - 1;
 
-        BurgersCoefficients<T, ndim_space>& coeffs;
+        BurgersCoefficients<T, ndim_space> coeffs;
 
 
         /**

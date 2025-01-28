@@ -66,6 +66,7 @@ namespace iceicle::petsc {
         }
         PetscCallAbort(comm, MatSetValues(A, data.extent(0), idxm.data(), data.extent(1),
                     idxn.data(), values.data(), ADD_VALUES));
+        return;
     }
 
 
