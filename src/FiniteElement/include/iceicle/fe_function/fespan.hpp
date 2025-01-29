@@ -320,7 +320,7 @@ namespace iceicle {
                 // build the data vectors to send
                 for(int irank = 0; irank < nrank; ++irank){
                     if(irank != myrank){
-                        send_data[irank].reserve(to_send[irank].size());
+                        send_data[irank].reserve(to_send[irank].size() * nv());
                         for(index_type pidx : to_send[irank]){
                             index_type igdof = dof_partitioning.inv_p_indices.at(pidx);
                             for(int iv = 0; iv < nv(); ++iv)

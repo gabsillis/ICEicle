@@ -3,7 +3,7 @@ return {
     ndim = 2,
 
     uniform_mesh = {
-        nelem = { 5, 5 },
+        nelem = { 10, 10 },
         bounding_box = {
             min = { 0.0, 0.0 },
             max = { 1.0, 1.0 },
@@ -43,7 +43,7 @@ return {
         quadrature = "gauss",
 
         -- the basis function order
-        order = 2,
+        order = 1,
     },
 
     -- set up Navier Stokes
@@ -101,7 +101,7 @@ return {
         kmax = 100,
         tau_abs = 1e-10,
         ivis = 1,
-        idiag = 1,
+        -- idiag = 1,
     },
 
     -- output
