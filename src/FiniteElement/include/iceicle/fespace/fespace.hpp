@@ -681,18 +681,37 @@ namespace iceicle {
 
         auto print_info(std::ostream& out)
         -> std::ostream& {
-            out << "Finite Element Space" << std::endl;
-            switch(conformity){
-                case l2_conformity(ndim):
-                    out << "Space Type: ";
-                    out << "L2" << std::endl;
-                    out << "ndof: " << ndof() << std::endl;
-                    break;
-                case h1_conformity(ndim):
-                    out << "Space Type: ";
-                    out << "H1 (isoparametric)" << std::endl;
-                    out << "ndof: " << ndof() << std::endl;
-                    break;
+            mpi::execute_on_rank(0, [&]{
+                out << "Finite Element Space" << std::endl;
+                switch(conformity){
+                    case l2_conformity(ndim):
+                        out << "Space Type: ";
+                        out << "L2" << std::endl;
+                        break;
+                    case h1_conformity(ndim):
+                        out << "Space Type: ";
+                        out << "H1 (isoparametric)" << std::endl;
+                        break;
+                }
+                IDX ndof_global = dof_partitioning.size();
+                out << "ndof: " << ndof_global << std::endl;
+            });
+            for(int irank = 0; irank < mpi::mpi_world_size(); ++irank){
+                IDX total_ndof = ndof();
+                IDX recv_total_ndof = ndof();
+#ifdef ICEICLE_USE_MPI
+                if(mpi::mpi_world_rank() == irank and irank != 0){
+                    MPI_Send(&total_ndof, 1, mpi_get_type<IDX>(), 0, 0, mpi::comm_world);
+                }
+#endif
+                if(mpi::mpi_world_rank() == 0){
+#ifdef ICEICLE_USE_MPI
+                    if(irank != 0)
+                        MPI_Recv(&total_ndof, 1, mpi_get_type<IDX>(), irank, 0, mpi::comm_world, MPI_STATUS_IGNORE);
+#endif
+                    out << "process " << irank << " | total_ndof: " << recv_total_ndof;
+                    out << " | owned_ndof: " << dof_partitioning.owned_range_size(irank) << std::endl;
+                }
             }
             return out;
         }

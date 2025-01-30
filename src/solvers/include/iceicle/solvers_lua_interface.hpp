@@ -628,11 +628,12 @@ namespace iceicle::solvers {
                         solver.vis_callback = [&](IDX k, Vec res_data, Vec du_data){
                                  T res_norm;
                                 PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &res_norm));
-                                std::cout << std::setprecision(8);
-                                std::cout << "itime: " << std::setw(6) << k
-                                    << " | residual l2: " << std::setw(14) << res_norm
-                                    << std::endl << std::endl;
-
+                                if(mpi::mpi_world_rank() == 0){
+                                    std::cout << std::setprecision(8);
+                                    std::cout << "itime: " << std::setw(6) << k
+                                        << " | residual l2: " << std::setw(14) << res_norm
+                                        << std::endl << std::endl;
+                                }
                                 // offset by initial solution iteration
                                 writer.write(k, (T) k);
 
@@ -662,9 +663,10 @@ namespace iceicle::solvers {
                         IDX kfinal = solver.solve(u);
 
                         // write the final iteration
-                        std::cout << "itime: " << std::setw(6) << kfinal 
-                            << " | Termination Criteria Reached"
-                            << std::endl << std::endl;
+                        if(mpi::mpi_world_rank() == 0)
+                            std::cout << "itime: " << std::setw(6) << kfinal 
+                                << " | Termination Criteria Reached"
+                                << std::endl << std::endl;
                         writer.write(kfinal, (T) kfinal);
                         if(residuals_writer) residuals_writer.write(kfinal, (T) kfinal);
                         write_restart(fespace, u, kfinal);

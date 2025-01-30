@@ -378,7 +378,8 @@ int main(int argc, char *argv[]) {
 
   //    // template specialization: ndim
   int ndim_arg = script_config["ndim"];
-  std::cout << "ndim: " << ndim_arg << std::endl;
+  if(mpi::mpi_world_rank() == 0)
+    std::cout << "ndim: " << ndim_arg << std::endl;
   switch (ndim_arg) {
   case 1:
     setup<1>(script_config, cli_args);

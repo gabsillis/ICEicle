@@ -38,11 +38,11 @@ namespace iceicle::lua {
                       cons_law_tbl["b_adv"][idim + 1];
           }
 
-          std::cout << burgers_coeffs.mu 
-                    << " " << burgers_coeffs.a[0] 
-                    << " " << burgers_coeffs.b[0] 
-                << std::endl;
-
+//          std::cout << burgers_coeffs.mu 
+//                    << " " << burgers_coeffs.a[0] 
+//                    << " " << burgers_coeffs.b[0] 
+//                << std::endl;
+//
           // create the discretization
           BurgersFlux physical_flux{burgers_coeffs};
           BurgersUpwind convective_flux{burgers_coeffs};
@@ -78,7 +78,7 @@ namespace iceicle::lua {
               for (int idim = 0; idim < ndim_space; ++idim)
                   burgers_coeffs.b[idim] = cons_law_tbl["b_adv"][idim + 1];
           }
-          std::cout << burgers_coeffs.b[0] << std::endl;
+//          std::cout << burgers_coeffs.b[0] << std::endl;
 
           // create the discretization
           SpacetimeBurgersFlux physical_flux{burgers_coeffs};
