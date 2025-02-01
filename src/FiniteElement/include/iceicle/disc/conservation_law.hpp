@@ -144,6 +144,7 @@ namespace iceicle {
         // ==================
 
         /// @brief switch to use the interior penalty method instead of ddg 
+        /// This sets beta1 to 0 to elminate the 2nd derivative dependent terms
         bool interior_penalty = false;
 
         /// @brief IC multiplier to get DDGIC
@@ -151,6 +152,10 @@ namespace iceicle {
         /// DDGIC (sigma = 1)
         /// Default: Standard DDG (sigma = 0)
         T sigma_ic = 0.0;
+
+        /// @brief Optional user interface to set the first DDG multiplier 
+        /// This is also the penalty coefficent for interior penalty methods
+        std::optional<T> beta0_user = std::nullopt;
 
         /// @brief dirichlet value for each bcflag index
         /// as a function callback 
@@ -577,7 +582,7 @@ namespace iceicle {
                     elR.basis->getPolynomialOrder()
                 );
                 // Danis and Yan reccomended for NS
-                T beta0 = std::pow(order + 1, 2);
+                T beta0 = beta0_user.value_or(std::pow(order + 1, 2));
                 T beta1 = 1 / std::max((T) (2 * order * (order + 1)), 1.0);
 
                 // switch to interior penalty if set
@@ -762,7 +767,7 @@ namespace iceicle {
                         int order = 
                             elL.basis->getPolynomialOrder();
                         // Danis and Yan reccomended for NS
-                        T beta0 = std::pow(order + 1, 2);
+                        T beta0 = beta0_user.value_or(std::pow(order + 1, 2));
                         T beta1 = 1 / std::max((T) (2 * order * (order + 1)), 1.0);
 
                         std::mdspan<T, std::extents<int, neq, ndim>> grad_ddg{grad_ddg_data.data()};
@@ -969,7 +974,7 @@ namespace iceicle {
                             elR.basis->getPolynomialOrder()
                         );
                         // Danis and Yan reccomended for NS
-                        T beta0 = std::pow(order + 1, 2);
+                        T beta0 = beta0_user.value_or(std::pow(order + 1, 2));
                         T beta1 = 1 / std::max((T) (2 * order * (order + 1)), 1.0);
 
                         // switch to interior penalty if set
@@ -1135,7 +1140,7 @@ namespace iceicle {
                         int order = 
                             elL.basis->getPolynomialOrder();
                         // Danis and Yan reccomended for NS
-                        T beta0 = std::pow(order + 1, 2);
+                        T beta0 = beta0_user.value_or(std::pow(order + 1, 2));
                         T beta1 = 1 / std::max((T) (2 * order * (order + 1)), 1.0);
 
                         // switch to interior penalty if set

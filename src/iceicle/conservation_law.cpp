@@ -87,6 +87,9 @@ void initialize_and_solve(
     // discretization options
     conservation_law.sigma_ic = cons_law_tbl.get_or("sigma_ic", conservation_law.sigma_ic);
     conservation_law.interior_penalty = cons_law_tbl.get_or("interior_penalty", conservation_law.interior_penalty);
+    sol::optional<T> beta0_user = cons_law_tbl["beta0"];
+    if(beta0_user.has_value())
+      conservation_law.beta0_user = beta0_user.value();
 
   // ==================================
   // = Initialize the solution vector =
