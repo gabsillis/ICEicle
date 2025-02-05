@@ -12,7 +12,6 @@
 #include "iceicle/fe_function/node_set_layout.hpp"
 #include "iceicle/fespace/fespace.hpp"
 #include "iceicle/iceicle_mpi_utils.hpp"
-#include <mpi.h>
 #include <ostream>
 #include <ranges>
 #include <span>
@@ -275,6 +274,7 @@ namespace iceicle {
                 mpi::communicator_type comm = mpi::comm_world
             ) -> void
             {
+#ifdef ICEICLE_USE_MPI
                 const pindex_map<index_type> &dof_partitioning = _layout.dof_partitioning;
                 
                 int nrank = mpi::size(comm), myrank = mpi::rank(comm);
@@ -358,7 +358,7 @@ namespace iceicle {
                 // wait for isends
                 MPI_Waitall(requests.size(), requests.data(), MPI_STATUSES_IGNORE);
                 requests.clear();
-
+#endif
             }
 
             /**

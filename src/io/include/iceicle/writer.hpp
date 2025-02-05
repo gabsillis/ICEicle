@@ -2,7 +2,9 @@
 /// @author Gianni Absillis (gabsill@ncsu.edu)
 
 #pragma once
+#ifdef ICEICLE_USE_VTK
 #include "iceicle/vtk_writer.hpp"
+#endif
 #include "iceicle/pvd_writer.hpp"
 #include <iceicle/fespace/fespace.hpp>
 #include <iceicle/dat_writer.hpp>
@@ -23,7 +25,7 @@ namespace iceicle::io {
         writer.write_vtu(itime, time);
     }
 
-
+#ifdef ICEICLE_USE_VTK
     // Writer concept requirements 
     template<class T, class IDX, int ndim, int conformity>
     inline
@@ -37,6 +39,7 @@ namespace iceicle::io {
         -> void
         { writer.rename_collection(new_name); }
     }
+#endif
 
     namespace impl {
         /// @brief external function interface for type erasure to rename the collection

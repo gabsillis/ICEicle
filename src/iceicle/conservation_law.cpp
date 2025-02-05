@@ -111,12 +111,14 @@ void initialize_and_solve(
     dat_writer.write_dat(0, 0.0);
   }
   if constexpr (ndim == 2 || ndim == 3) {
+#ifdef ICEICLE_USE_VTK
     io::PVTUWriter<T, IDX, ndim, conformity> vtk_writer{fespace, mpi::comm_world};
     io::output_field_function<T, DiscType::nv_comp>
         field_func{conservation_law.output_field_names(), conservation_law.output_field_func()};
     vtk_writer.register_fields(u, field_func);
     vtk_writer.rename_collection("initial_condition");
     vtk_writer.write(0, 0.0);
+#endif
   }
 
   // ==================================

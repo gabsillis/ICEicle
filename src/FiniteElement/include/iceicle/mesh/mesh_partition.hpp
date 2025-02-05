@@ -8,7 +8,6 @@
 #include <iceicle/mesh/mesh.hpp>
 #include <limits>
 #include <set>
-#include <mpi.h>
 #ifdef ICEICLE_USE_METIS
 #include <metis.h>
 #ifdef ICEICLE_USE_MPI 
@@ -685,7 +684,15 @@ namespace iceicle {
 
 }
 
-
+#else // not ICEICLE_USE_MPI but do have METIS
+    namespace iceicle {
+        template<class T, class IDX, int ndim>
+        auto partition_mesh(const AbstractMesh<T, IDX, ndim>& mesh) 
+        -> const AbstractMesh<T, IDX, ndim>&
+        {
+            return mesh;
+        }
+    } 
 #endif // ICEICLE_USE_MPI
 
 #else // No metis 
