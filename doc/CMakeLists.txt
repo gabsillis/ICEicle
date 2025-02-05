@@ -19,7 +19,7 @@ if(Doxygen_FOUND)
 
   file(MAKE_DIRECTORY ${DOXYGEN_OUTPUT_DIR}) #Doxygen won't create this for us
   add_custom_command(OUTPUT ${DOXYGEN_INDEX_FILE}
-                    DEPENDS ${CAT_CUTIFIER_PUBLIC_HEADERS}
+                    DEPENDS ${ICEICLE_PUBLIC_HEADERS}
                     COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYFILE_OUT}
                     MAIN_DEPENDENCY ${DOXYFILE_OUT} ${DOXYFILE_IN}
                     COMMENT "Generating docs")

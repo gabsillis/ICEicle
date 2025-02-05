@@ -439,6 +439,7 @@ All simulations need a mesh to define and partition the geometric domain. Curren
 
 **Required Members**
 * Option 1: bounding box
+
    * :code:`nelem` : the number of elements in each direction
 
      This is a table of size ``ndim`` and is ordered in axis order (x, y, z, ...)
