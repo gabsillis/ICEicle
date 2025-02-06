@@ -30,11 +30,9 @@ namespace iceicle {
     /// The owned pindices for a given mpi rank are in the range
     /// [ owned_offsets[mpi_rank], owned_offsets[mpi_rank + 1] )
     ///
-    /// This is so matrices can be constructed in block format per process
+    /// This is so matrices can be constructed in block format per process 
     ///
-    /// If the indices are completely disjoint between processes (such as element indices),
-    /// then p_indices = owned_offsets[my_mpi_rank], owned_offsets[my_mpi_rank] + 1, ...
-    ///                  owned_offsets[my_mpi_rank + 1] - 1
+    /// The first owned_range_size(my_mpi_rank) p_indices should be the owned p_indices
     template< class IDX >
     struct pindex_map {
         using index_type = IDX;

@@ -46,10 +46,11 @@
          * @brief evaluate the first derivatives of the basis functions
          * 
          * @param [in] xi  the point in the reference domain [size = ndim]
-         * @param [out] b the values of the first derivatives of the basis functions at that point
+         * @param [out] dBidxj the values of the first derivatives of the basis functions at that point
          *                This is in the form of a 1d pointer array that must be preallocated
          *                size must be nbasis * ndim or larger
-         *                \frac{dB_i}{d\xi_j} where i is ibasis
+         *                \f[ \frac{dB_i}{d\xi_j} \f]
+         *                where i is ibasis
          *                [size = [nbasis : i][ndim : j]] 
          */
         virtual
@@ -59,7 +60,7 @@
          * @brief evaluate the hessian of the basis functions in the reference domain
          *
          * @param [in] a the point [size = ndim]
-         * @param [out] the hessian of all the basis functions as a 1D array 
+         * @param [out] Hessian the hessian of all the basis functions as a 1D array 
          *      [size = nbasis * ndim * ndim]
          *      ordered in C array order basis, ndim, ndim
          */
@@ -69,7 +70,10 @@
         };
 
         /**
-         * @brief Tell if a basis is orthonormal (L2 inner product B_i \otimes B_j is diagonal) or not
+         * @brief Tell if a basis is orthonormal 
+         *
+         * (L2 inner product \f$ \langle B_i , B_j \rangle \f$ is diagonal) or not
+         * \f[ \int B_i B_j \; d\Omega = \delta_{ij} \f]
          * 
          * @return true if the basis is orthonormal
          * @return false if the basis is not orthonormal
@@ -82,6 +86,7 @@
          * where the value of each basis function corresponds to a node
          *
          * @return true if this is a nodal basis
+         * @return false is this is a modal basis
          */
         virtual
         bool isNodal() const { return false; }
