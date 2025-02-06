@@ -260,6 +260,8 @@ template< class real, int ndim >
 auto get_physics(sol::table cons_law_tbl) 
 -> std::optional<physics_options<real, ndim>>
 {
+    bool euler = util::eq_icase(cons_law_tbl["name"].get<std::string>(), "euler");
+
     // Get the reference quantities
     auto ref_opt = ref_parameters<real, ndim>(cons_law_tbl);
     if(!ref_opt){
@@ -276,7 +278,9 @@ auto get_physics(sol::table cons_law_tbl)
     }
 
     // set up the viscosity function
-    auto visc_opt = select_viscosity<real>(cons_law_tbl, ref);
+    auto visc_opt = (euler) 
+        ? std::optional{std::function<real(real)>{[](real) -> real { return 0.0; }}}
+        : select_viscosity<real>(cons_law_tbl, ref);
     if(!visc_opt){
         util::AnomalyLog::log_anomaly("Error initializing viscosity function");
         return std::nullopt;

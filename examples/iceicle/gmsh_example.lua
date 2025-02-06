@@ -80,7 +80,7 @@ return {
         type = "rk3-tvd",
         cfl = 0.5,
         ntime = 500000,
-        ivis = 1
+        ivis = 1000
     },
 
     -- solver
@@ -101,6 +101,6 @@ return {
 
     -- output
     output = {
-        writer = "vtu",
+        writer = "vtk",
     }
 }

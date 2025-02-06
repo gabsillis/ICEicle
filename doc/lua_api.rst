@@ -449,6 +449,13 @@ Output
 
 * ``vtu`` Paraview vtu file (2D and 3D only)
 
+.. warning:: 
+   vtu field names may not be correctly put in for NS discretizations. 
+   This also only works in serial.
+   Use 'vtk' instead.
+
+* ``vtk`` paraview pvtu file (works in parallel)
+
 * ``dat`` Space separated values along the solution in 1D (1D only)
 
 ===============

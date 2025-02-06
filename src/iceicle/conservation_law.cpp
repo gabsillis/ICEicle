@@ -284,38 +284,39 @@ void setup(sol::table script_config, cli_parser cli_args) {
       if(!physics_opt){
         AnomalyLog::log_anomaly("Could not set up physics for NS");
         return;
-        physics_opt.value() >> tmp::select_fcn{
-            [&](auto&& phys) -> void { 
-                navier_stokes::Physics physics{phys};
-
-                // get isothermal wall temperatures
-                sol::optional<sol::table> iso_tmps_opt = cons_law_tbl["isothermal_temperatures"];
-                if(iso_tmps_opt){
-                    sol::table iso_tmps = iso_tmps_opt.value();
-                    for(int i = 0; i < iso_tmps.size(); ++i){
-                        physics.isothermal_temperatures.push_back(iso_tmps[i + 1]);
-                    }
-                }
-
-                // Create the physical and diffusion fluxes
-                navier_stokes::Flux flux{physics, std::false_type{}};
-                navier_stokes::DiffusionFlux diffusion_flux{physics, std::false_type{}};
-
-                // select the inviscid flux function 
-                std::string flux_name = cons_law_tbl.get_or("flux", std::string{"van_leer"});
-
-                if(util::eq_icase(flux_name, "van_leer")){
-                    navier_stokes::VanLeer numflux{physics};
-                    ConservationLawDDG disc{
-                        std::move(flux), std::move(numflux), std::move(diffusion_flux)};
-                        initialize_and_solve(script_config, fespace, disc);
-                }
-
-                util::AnomalyLog::log_anomaly("Could not construct NS conservation law");
-                return;
-            }
-        };
       }
+      physics_opt.value() >> tmp::select_fcn{
+          [&](auto&& phys) -> void { 
+              navier_stokes::Physics physics{phys};
+
+              // get isothermal wall temperatures
+              sol::optional<sol::table> iso_tmps_opt = cons_law_tbl["isothermal_temperatures"];
+              if(iso_tmps_opt){
+                  sol::table iso_tmps = iso_tmps_opt.value();
+                  for(int i = 0; i < iso_tmps.size(); ++i){
+                      physics.isothermal_temperatures.push_back(iso_tmps[i + 1]);
+                  }
+              }
+
+              // Create the physical and diffusion fluxes
+              navier_stokes::Flux flux{physics, std::false_type{}};
+              navier_stokes::DiffusionFlux diffusion_flux{physics, std::false_type{}};
+
+              // select the inviscid flux function 
+              std::string flux_name = cons_law_tbl.get_or("flux", std::string{"van_leer"});
+
+              if(util::eq_icase(flux_name, "van_leer")){
+                  navier_stokes::VanLeer numflux{physics};
+                  ConservationLawDDG disc{
+                      std::move(flux), std::move(numflux), std::move(diffusion_flux)};
+                      initialize_and_solve(script_config, fespace, disc);
+                      return;
+              }
+
+              util::AnomalyLog::log_anomaly("Could not construct Euler conservation law");
+              return;
+          }
+      };
     } else {
       AnomalyLog::log_anomaly(
           Anomaly{"No such conservation_law implemented",
