@@ -1,3 +1,10 @@
+-- Example: Navier-Stokes Manufactured Solution
+--
+-- Solves a Manufactured Solution for Navier-Stokes equation
+-- from Cheng et al.
+-- A Direct Discontinuous Galerkin Method with Interface Correction
+-- for the Compressible Navier-Stokes Equations on Unstructured Grids
+
 return {
     ndim = 2,
 
