@@ -322,8 +322,10 @@ namespace iceicle::io {
                     double* coords = ref_cell->GetParametricCoords();
                     std::vector<Point> refpts(ref_cell->GetNumberOfPoints());
                     for(int ipoin = 0; ipoin < ref_cell->GetNumberOfPoints(); ++ipoin){
-                        double * coords_start = coords + 3 * ipoin;
+                        double *coords_start = coords + 3 * ipoin;
                         MATH::GEOMETRY::Point<T, ndim> refpt{};
+                        for(int idim = 0; idim < ndim; ++idim)
+                            refpt[idim] = coords_start[idim];
                         refpts[ipoin] = refpt;
                     }
                     return std::pair{ref_cell, refpts};
