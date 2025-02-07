@@ -7,6 +7,7 @@
 #include "iceicle/geometry/transformations_table.hpp"
 #include <iceicle/mesh/mesh.hpp>
 #include <limits>
+#include <mpi.h>
 #include <set>
 #ifdef ICEICLE_USE_METIS
 #include <metis.h>
@@ -86,6 +87,9 @@ namespace iceicle {
     -> std::pair<pindex_map<IDX>, std::vector<IDX>> {
         util::crs elsuel_metis_int{util::convert_crs<idx_t, idx_t>(elsuel)};
         idx_t nelem = elsuel.nrow();
+#ifdef ICEICLE_USE_MPI
+        MPI_Bcast(&nelem, 1, mpi_get_type<idx_t>(), 0, MPI_COMM_WORLD);
+#endif
 
         // get mpi information
         int nrank, myrank;

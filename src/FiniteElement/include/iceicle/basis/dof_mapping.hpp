@@ -650,7 +650,10 @@ namespace iceicle {
 
             // create a renumbering that makes contiguous dof ranges 
             // for each process based on ownership
-            std::vector<std::vector<IDX>> owned_pdofs(nrank, std::vector<IDX>{});
+            // NOTE: there may be dofs that are unused depending on the 
+            // quality of input. These get put into the nrank-th vector
+            // to be ignored
+            std::vector<std::vector<IDX>> owned_pdofs(nrank + 1, std::vector<IDX>{});
             std::vector<IDX> renumbering; // old_pdof = renumbering[new_pdof]
             renumbering.reserve(gdofs.size());
             std::vector<IDX> offsets = {0};

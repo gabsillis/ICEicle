@@ -501,6 +501,10 @@ namespace iceicle {
         /// then the nodes of the boundary face
         using boundary_face_desc = std::tuple<BOUNDARY_CONDITIONS, int, std::vector<IDX>>;
 
+        // only do this on the first rank
+        if(mpi::mpi_world_rank() != 0)
+            return AbstractMesh<T, IDX, ndim>{};
+
         // setup for parsing
         std::size_t line_no = 0;
         READER_STATE state = READER_STATE::TOP_LEVEL; 
