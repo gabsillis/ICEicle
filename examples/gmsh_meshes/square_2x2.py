@@ -5,7 +5,7 @@ import numpy as np
 
 
 # mesh size parameter
-lc = 0.4
+lc = 0.05
 
 # setup the gmsh model
 gmsh.initialize()

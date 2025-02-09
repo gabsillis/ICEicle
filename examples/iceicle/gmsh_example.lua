@@ -8,7 +8,7 @@ local gamma = 1.4
 local rho = 1.0
 local pressure = 1
 -- local mach = 0.38
-local mach = 1.1
+local mach = 0.7
 local aoa = .09; -- about 5 degrees
 
 local csound = math.sqrt(gamma * pressure / rho)
@@ -78,9 +78,10 @@ return {
     -- solver
     solver = {
         type = "rk3-tvd",
-        cfl = 0.5,
+        cfl = 0.3,
+        -- dt = 1e-4,
         ntime = 500000,
-        ivis = 10
+        ivis = 100
     },
 
     -- solver

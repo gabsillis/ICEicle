@@ -466,6 +466,8 @@ namespace iceicle {
                         
                         for(int inode = 0; inode < nnode; ++inode){
                             linestream >> fac_nodes[inode];
+                            // apply renumbering
+                            fac_nodes[inode] = gmsh_idx_to_nodeidx[fac_nodes[inode]];
                         }
                         boundary_infos.push_back(std::tuple{bc_type, bc_flag, fac_nodes});
                     }
