@@ -650,9 +650,6 @@ namespace iceicle {
 
             // create a renumbering that makes contiguous dof ranges 
             // for each process based on ownership
-            // NOTE: there may be dofs that are unused depending on the 
-            // quality of input. These get put into the nrank-th vector
-            // to be ignored
             std::vector<std::vector<IDX>> owned_pdofs(nrank + 1, std::vector<IDX>{});
             std::vector<IDX> renumbering; // old_pdof = renumbering[new_pdof]
             renumbering.reserve(gdofs.size());
@@ -667,7 +664,7 @@ namespace iceicle {
             }
 //             fmt::println("renumbering: {}", renumbering);
             // new_pdof = inverse_renumbering[old_pdof]
-            std::vector<IDX> inverse_renumbering(renumbering.size());
+            std::vector<IDX> inverse_renumbering(gdofs.size(), -1);
             for(IDX i = 0; i < renumbering.size(); ++i){
                 inverse_renumbering[renumbering[i]] = i;
             }
