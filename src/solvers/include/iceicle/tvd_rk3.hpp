@@ -148,7 +148,7 @@ public:
         // sync dt between processes
 #ifdef ICEICLE_USE_MPI 
         T dt_individual = dt;
-        MPI_Allreduce(&dt_individual, &dt, 1, mpi_get_type<T>(), MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(&dt_individual, &dt, 1, mpi_get_type<T>(), MPI_MIN, MPI_COMM_WORLD);
 #endif
 
         // storage for rhs of mass matrix equation
