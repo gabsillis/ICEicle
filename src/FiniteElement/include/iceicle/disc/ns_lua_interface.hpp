@@ -19,7 +19,7 @@ namespace lua {
 ///
 /// Case 1: Specify primitive
 /// "rho" - density
-/// "u" - u
+/// "u" - vector (table) of 
 /// "T" - temperature
 /// "mu" - viscosity : Optional (determined from T)
 /// "l" - reference length : Optional
@@ -29,6 +29,8 @@ namespace lua {
 /// "T" - temperature
 /// "Re" - Reynolds number
 /// "mach" - mach number
+/// "velocity_direction" - the direction of the velocity 
+///     (internally normalized so don't have to worry about unit vectors)
 /// "l" - reference length : Optional
 ///
 template <class T, int ndim>
@@ -48,18 +50,32 @@ auto parse_free_stream(sol::table free_stream_table, T gamma, T Rgas)
         return true;
     };
 
-    if (all_has_value(std::vector{"rho", "u", "T"})) {
+    sol::optional<sol::table> velocity_table = free_stream_table["u"];
+
+    if (all_has_value(std::vector{"rho", "T"}) && velocity_table.has_value()) {
+        using namespace NUMTOOL::TENSOR::FIXED_SIZE;
         T temp = free_stream_table["T"];
         T mu = free_stream_table.get_or("mu", Sutherlands<T>{}(temp));
+
+        Tensor<T, ndim> u;
+        for(int idim = 0; idim < ndim; ++idim){
+            u[idim] = velocity_table.value()[idim + 1];
+        }
+        T umag = norml2(u);
+        u = normalize(u);
+
         return std::optional{
             FreeStream<T, ndim>{.rho_inf = free_stream_table["rho"],
-                                .u_inf = free_stream_table["u"],
+                                .u_inf = umag,
+                                .u_direction = u,
                                 .temp_inf = temp,
                                 .mu_inf = mu,
                                 .l_ref = free_stream_table["l"].get_or((T)1.0)}};
     }
 
-    if (all_has_value(std::vector{"rho", "T", "Re", "mach"})) {
+    sol::optional<sol::table> velocity_direction_table = free_stream_table["velocity_direction"];
+    if (all_has_value(std::vector{"rho", "T", "Re", "mach"}) && velocity_direction_table.has_value()) {
+        using namespace NUMTOOL::TENSOR::FIXED_SIZE;
         T temp = free_stream_table["T"];
         T csound = std::sqrt(gamma * Rgas * temp);
         T mach = free_stream_table["mach"];
@@ -69,9 +85,16 @@ auto parse_free_stream(sol::table free_stream_table, T gamma, T Rgas)
         T Re = free_stream_table["Re"];
         T mu = rho * u * l_ref / Re;
 
+        Tensor<T, ndim> u_direction;
+        for(int idim = 0; idim < ndim; ++idim){
+            u_direction[idim] = velocity_direction_table.value()[idim + 1];
+        }
+        u_direction = normalize(u_direction);
+
         return std::optional{navier_stokes::FreeStream<T, ndim>{
             .rho_inf = rho,
             .u_inf = u,
+            .u_direction = u_direction,
             .temp_inf = temp,
             .mu_inf = mu,
             .l_ref = l_ref}
@@ -290,16 +313,30 @@ auto get_physics(sol::table cons_law_tbl)
         [&](const auto& eos) 
         -> std::optional<physics_options<real, ndim>> 
         {
+
+            // get the free stream quantities (if applicable)
+            FreeStream<real, ndim> fs{};
+            sol::optional<sol::table> fs_table =  cons_law_tbl["free_stream"];
+            if(fs_table.has_value()){
+                auto fs_opt = parse_free_stream<real, ndim>(fs_table.value(), eos.gamma, eos.Rgas);
+                if(!fs_opt.has_value()){
+                    util::AnomalyLog::log_anomaly("free_stream improperly specified");
+                    return std::nullopt;
+                } else {
+                    fs = fs_opt.value();
+                }
+            }
+
             using eos_t = std::remove_cvref_t<decltype(eos)>;
             sol::optional<std::string> varset_name_opt = cons_law_tbl["varset"];
             if(varset_name_opt){
                 std::string varset_name = varset_name_opt.value();
                 if(util::eq_icase(varset_name, "conservative"))
-                    return Physics<real, ndim, eos_t, VARSET::CONSERVATIVE>{ref, eos, visc_opt.value()};
+                    return Physics<real, ndim, eos_t, VARSET::CONSERVATIVE>{ref, eos, visc_opt.value(), fs};
                 if(util::eq_icase_any(varset_name, "rho_u_p", "primitive pressure"))
-                    return Physics<real, ndim, eos_t, VARSET::RHO_U_P>{ref, eos, visc_opt.value()};
+                    return Physics<real, ndim, eos_t, VARSET::RHO_U_P>{ref, eos, visc_opt.value(), fs};
                 if(util::eq_icase_any(varset_name, "rho_u_t", "primitive temperature"))
-                    return Physics<real, ndim, eos_t, VARSET::RHO_U_T>{ref, eos, visc_opt.value()};
+                    return Physics<real, ndim, eos_t, VARSET::RHO_U_T>{ref, eos, visc_opt.value(), fs};
 
                 // should have found varset by now 
                 util::AnomalyLog::log_anomaly("unrecognized varset: " + varset_name);
@@ -307,7 +344,7 @@ auto get_physics(sol::table cons_law_tbl)
             }
 
             // Default: Conservative variables
-            return Physics<real, ndim, eos_t, VARSET::CONSERVATIVE>{ref, eos, visc_opt.value()};
+            return Physics<real, ndim, eos_t, VARSET::CONSERVATIVE>{ref, eos, visc_opt.value(), fs};
         }
     }, eos_opt.value());
 

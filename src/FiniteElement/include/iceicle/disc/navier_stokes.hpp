@@ -687,9 +687,20 @@ namespace iceicle {
                 ReferenceParameters<real> ref, /// @param reference parameters for nondimensionalization
                 EoS eos,          /// @param the equation of state
                 is_viscosity_fcn<real> auto viscosity, /// @param the viscosity function
+                FreeStream<real, ndim> free_stream,
                 real Pr = 0.72       /// @param Prandtl number
-            ) : Pr{Pr}, ref{ref}, viscosity{viscosity},
-                nondim{create_nondim(ref)}, eos{eos}
+            ) : Pr{Pr}, ref{ref}, viscosity{viscosity}, 
+                nondim{create_nondim(ref)}, eos{eos}, free_stream{free_stream}
+            {}
+
+            /// @brief Constructor
+            /// Set up all 
+            Physics(
+                ReferenceParameters<real> ref, /// @param reference parameters for nondimensionalization
+                EoS eos,          /// @param the equation of state
+                is_viscosity_fcn<real> auto viscosity, /// @param the viscosity function
+                real Pr = 0.72       /// @param Prandtl number
+            ) : Physics(ref, eos, viscosity, free_stream, Pr)
             {}
 
             /// @brief calculate the nondimensional shear stress 
@@ -1097,14 +1108,16 @@ ns_wall_bc_tag:
                             // outflow
                             uadvB = stateL.velocity;
                             axpy(Ub - normal_uadv_i, unit_normal, uadvB);
+
                             sb = SQUARED(stateL.csound) / 
                                 (gamma * std::pow(stateL.rho, gamma - 1));
                         } else {
                             // inflow
-                            uadvB = stateL.velocity;
-                            axpy(Ub - normal_uadv_i, unit_normal, uadvB);
-                            sb = SQUARED(stateL.csound) / 
-                                (gamma * std::pow(stateL.rho, gamma - 1));
+                            uadvB = state_freestream.velocity;
+                            axpy(Ub - normal_uadv_o, unit_normal, uadvB);
+
+                            sb = SQUARED(state_freestream.csound) / 
+                                (gamma * std::pow(state_freestream.rho, gamma - 1));
                         }
 
                         real rhoR = std::pow(SQUARED(cb) / (gamma * sb), 1.0 / (gamma - 1));

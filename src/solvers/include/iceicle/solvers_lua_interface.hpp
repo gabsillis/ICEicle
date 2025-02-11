@@ -138,6 +138,11 @@ namespace iceicle::solvers {
                 pvtu_writer.register_fields(u, field_func);
                 writer = pvtu_writer;
             }
+#else 
+
+            if(writer_name && eq_icase(writer_name.value(), "vtk")){
+                AnomalyLog::log_anomaly("Build with ICEICLE_USE_VTK=ON to use the vtk writer.");
+            }
 #endif
         }
         return writer;
@@ -523,6 +528,8 @@ namespace iceicle::solvers {
 
                 // === Check for invalid state ===
                 if(AnomalyLog::size() > 0){
+                    if(mpi::mpi_world_rank() == 0)
+                        std::cerr << "Errors Found: Aborting solve" << std::endl;
                     AnomalyLog::handle_anomalies();
                     return;
                 }
