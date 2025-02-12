@@ -328,7 +328,7 @@ namespace iceicle::solvers {
                 subproblem_ctx.comm = comm;
                 subproblem_ctx.J = jac;
                 subproblem_ctx.Jx = Jx;
-                subproblem_ctx.npde = local_u_size;
+                subproblem_ctx.npde = u_layout.owned_size(comm);
                 subproblem_ctx.ngeo = geo_map.size();
 
                 MatSetType(subproblem_mat, MATSHELL);
