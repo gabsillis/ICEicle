@@ -12,6 +12,7 @@
 #include "iceicle/fe_function/node_set_layout.hpp"
 #include "iceicle/fespace/fespace.hpp"
 #include "iceicle/iceicle_mpi_utils.hpp"
+#include "iceicle/tmp_utils.hpp"
 #include <ostream>
 #include <ranges>
 #include <span>
@@ -109,7 +110,7 @@ namespace iceicle {
             constexpr fespan(R&& data_range, const LayoutPolicy &dof_map)
             noexcept : _ptr(std::ranges::data(data_range)), _layout{dof_map}, _accessor{}
             {
-                static_assert(std::is_same_v<std::ranges::range_value_t<decltype(data_range)>, T>, "value type must match");
+                static_assert(std::is_same_v<tmp::cv_qualified_range_value_t<R>, T>, "value type must match");
                 T sz = std::ranges::size(data_range);
                 if(sz < size()){
                     util::AnomalyLog::log_anomaly(util::Anomaly{
@@ -459,7 +460,7 @@ namespace iceicle {
     fespan(T *data, const LayoutPolicy &) -> fespan<T, LayoutPolicy>;
 
     template<std::ranges::contiguous_range R, class LayoutPolicy>
-    fespan(R&& data_range, const LayoutPolicy &) -> fespan< std::ranges::range_value_t<R>, LayoutPolicy >;
+    fespan(R&& data_range, const LayoutPolicy &) -> fespan< tmp::cv_qualified_range_value_t<R>, LayoutPolicy >;
 
     template<std::ranges::contiguous_range R, class LayoutPolicy, class AccessorPolicy>
     fespan(R&& data_range, const LayoutPolicy &, const AccessorPolicy&)
@@ -476,14 +477,19 @@ namespace iceicle {
      * @param [in] x the fespan to add 
      * @param [in/out] y the fespan to add to
      */
-    template<typename T, class LayoutPolicyx, class LayoutPolicyy>
-    void axpy(T alpha, fespan<T, LayoutPolicyx> x, fespan<T, LayoutPolicyy> y){
+    template<typename Tx, typename Ty, class LayoutPolicyx, class LayoutPolicyy>
+    void axpy(auto alpha, fespan<Tx, LayoutPolicyx> x, fespan<Ty, LayoutPolicyy> y)
+    requires(
+            std::is_arithmetic<std::remove_cv_t<Tx>>::value 
+            and std::is_arithmetic<std::remove_cv_t<Ty>>::value 
+            and std::is_arithmetic<std::remove_cv_t<decltype(alpha)>>::value 
+    ) {
         using index_type = decltype(x)::index_type;
 
         if constexpr(std::is_same_v<LayoutPolicyy, LayoutPolicyx>) {
             // do in a single loop over the 1d index space 
-            T *ydata = y.data();
-            T *xdata = x.data();
+            Ty *ydata = y.data();
+            Tx *xdata = x.data();
             index_type valid_size = std::min(x.size(), y.size());
             for(index_type i = 0; i < valid_size; ++i){
                 ydata[i] += alpha * xdata[i];
@@ -1020,8 +1026,15 @@ namespace iceicle {
      * @param [in] x the dofspan to add 
      * @param [in/out] y the dofspan to add to
      */
-    template<typename T, class LayoutPolicy>
-    auto axpy(T alpha, dofspan<T, LayoutPolicy> x, dofspan<T, LayoutPolicy> y) -> void {
+    template<typename Tx, typename Ty, class LayoutPolicy>
+    auto axpy(auto alpha, dofspan<Tx, LayoutPolicy> x, dofspan<Ty, LayoutPolicy> y)
+    -> void 
+    requires(
+            std::is_arithmetic<std::remove_cv_t<Tx>>::value 
+            and std::is_arithmetic<std::remove_cv_t<Ty>>::value 
+            and std::is_arithmetic<std::remove_cv_t<decltype(alpha)>>::value 
+    )
+    {
         using index_type = decltype(y)::index_type;
         for(index_type idof = 0; idof < x.ndof(); ++idof){
             for(index_type iv = 0; iv < x.nv(); ++iv){

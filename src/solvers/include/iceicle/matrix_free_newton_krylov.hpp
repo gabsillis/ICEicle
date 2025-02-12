@@ -82,7 +82,7 @@ namespace iceicle::solvers {
             copy_fespan(u, up);
             component_span xp{xdata_peturb, x_layout};
             {
-                petsc::VecSpan pview{p};
+                petsc::ConstVecSpan pview{p};
                 fespan du{pview, u_layout};
                 component_span dx{pview.data() + u_layout.size(), x_layout};
                 axpy(epsilon, du, up);
@@ -99,7 +99,7 @@ namespace iceicle::solvers {
 
             // directional derivative
             {
-                petsc::VecSpan resview{res};
+                petsc::ConstVecSpan resview{res};
                 petsc::VecSpan yview{y};
                 for(IDX i = 0; i < resp.size(); ++i){
                     yview[i] = (resp[i] - resview[i]) / epsilon;

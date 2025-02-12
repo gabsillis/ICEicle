@@ -243,9 +243,15 @@ namespace iceicle {
      * @param [in] x the component_span to add 
      * @param [in/out] y the component_span to add to
      */
-    template<class T, class LayoutPolicy>
-    auto axpy(T alpha, component_span<T, LayoutPolicy> x, component_span<T, LayoutPolicy> y) -> void 
-    {
+    template<typename Tx, typename Ty, class LayoutPolicy>
+    auto axpy(auto alpha, component_span<Tx, LayoutPolicy> x,
+            component_span<Ty, LayoutPolicy> y)
+    -> void 
+    requires(
+            std::is_arithmetic<std::remove_cv_t<Tx>>::value 
+            and std::is_arithmetic<std::remove_cv_t<Ty>>::value 
+            and std::is_arithmetic<std::remove_cv_t<decltype(alpha)>>::value 
+    ) {
         using index_type = decltype(y)::index_type;
         for(index_type idof = 0; idof < x.ndof(); ++idof){
             for(index_type iv = 0; iv < x.nv(idof); ++iv){

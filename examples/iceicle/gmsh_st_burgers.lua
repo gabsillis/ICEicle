@@ -80,8 +80,9 @@ return {
 
 	-- solver
 	solver = {
-		type = "mfnk",
-		form_subproblem_mat = false,
+		-- type = "mfnk",
+		type = "lm",
+		form_subproblem_mat = true,
 		linesearch = {
 			type = "none",
 		},
@@ -95,6 +96,6 @@ return {
 
 	-- output
 	output = {
-		writer = "vtu",
+		writer = "vtk",
 	},
 }

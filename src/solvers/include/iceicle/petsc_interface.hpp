@@ -202,4 +202,101 @@ namespace iceicle::petsc {
         inline constexpr size_type size() const { return std::distance(begin(), end());}
     };
 
+    /**
+     * @brief a non-owning view of a petsc vec 
+     * automatically releases view with destructor or the release() function
+     */
+    class ConstVecSpan {
+        Vec v;
+        const PetscScalar *_data;
+        const PetscScalar *_end_data;
+
+        public:
+
+        using iterator = const PetscScalar*;
+        using reference = const PetscScalar&;
+        using pointer = const PetscScalar*;
+        using size_type = std::size_t;
+
+        /**
+         * @brief create a span from a Petsc vec 
+         */
+        inline ConstVecSpan(Vec v) : v(v) {
+            PetscInt local_size;
+            VecGetLocalSize(v, &local_size);
+            VecGetArrayRead(v, &_data);
+            _end_data = _data + local_size;
+        }
+
+        // delete copy semantics
+        ConstVecSpan(const ConstVecSpan &other) = delete;
+        ConstVecSpan &operator=(const ConstVecSpan &other) = delete;
+
+        ConstVecSpan(ConstVecSpan &&other) = default;
+        ConstVecSpan &operator=(ConstVecSpan &&other) = default;
+
+        /**
+         * @brief release this view 
+         * afterwards, this will non longer function to access the vec 
+         * WARNING: this container is invalid after release()
+         * NOTE: A preferred pattern may be to use this in a scoped section of code 
+         * and allow the destructor to release the view at the end of the sub-scope
+         */
+        inline void release(){
+            VecRestoreArrayRead(v, &_data);
+            _data = nullptr;
+            _end_data = nullptr;
+        }
+
+        /// @brief destructor
+        ~ConstVecSpan(){
+            if(_data != nullptr) release();
+        }
+
+        /// @brief returns an iterator to the first element of the span,
+        /// if the span is empty, the returned iterator will be equal to end 
+        inline constexpr iterator begin() const noexcept { return _data; }
+
+        /// @brief returns an iterator to the first element of the span,
+        /// if the span is empty, the returned iterator will be equal to end 
+        inline constexpr const iterator cbegin() const noexcept { return _data; }
+
+        /// @brief 
+        /// Returns an iterator to the element following the last element of the span.
+        /// This element acts as a placeholder; attempting to access it results in undefined behavior. 
+        inline constexpr iterator end() const noexcept { return _end_data; } 
+
+        /// @brief 
+        /// Returns an iterator to the element following the last element of the span.
+        /// This element acts as a placeholder; attempting to access it results in undefined behavior. 
+        inline constexpr const iterator cend() const noexcept { return _end_data; } 
+
+        /// @brief returns a reverse iterator to the first element of the reversed span
+        inline constexpr iterator rbegin() const noexcept { return _end_data - 1; }
+
+        /// @brief returns a reverse iterator to the first element of the reversed span
+        inline constexpr iterator const crbegin() const noexcept { return _end_data - 1; }
+
+        /// @brief returns a reverse iterator the last element of the reversed span
+        inline constexpr iterator rend() const noexcept { return _data - 1; }
+
+        /// @brief returns a reverse iterator the last element of the reversed span
+        inline constexpr iterator const crend() const noexcept { return _data - 1; }
+
+        /// @brief returns a reference to the first element in the span
+        inline constexpr reference front() const { return _data[0]; }
+
+        /// @brief returns a reference to the last element in the span
+        inline constexpr reference back() const { return _end_data[-1]; }
+
+        /// @brief returns a reference to the idxth element in the _data 
+        inline constexpr reference operator[](size_type idx) const { return _data[idx]; } 
+
+        /// @brief get the underlying pointer 
+        inline constexpr pointer data() const { return _data; }
+
+        /// @brief get the size of the span 
+        inline constexpr size_type size() const { return std::distance(begin(), end());}
+    };
+
 }
