@@ -265,11 +265,12 @@ namespace iceicle {
         for(int idim = 0; idim < ndim; ++idim, ++it_xmin, ++it_xmax, ++it_nelem){
             T pt_min = *it_xmin;
             std::size_t nelem_dir = *it_nelem;
-            T dx = (*it_xmax - *it_xmin) / (nelem_dir * order);
-            std::vector<T> nodes_dir(nelem_dir + 1);
+            std::size_t nnode_dir = nelem_dir * order + 1;
+            T dx = (*it_xmax - *it_xmin) / (nnode_dir - 1);
+            std::vector<T> nodes_dir(nnode_dir);
             nodes_dir[0] = pt_min;
-            for(std::size_t i = 0; i < nelem_dir; ++i){
-                nodes_dir[i + 1] = nodes_dir[i] + dx;
+            for(std::size_t i = 1; i < nnode_dir; ++i){
+                nodes_dir[i] = nodes_dir[i - 1] + dx;
             }
             nodes_1d[idim] = nodes_dir;
         }
@@ -636,7 +637,7 @@ namespace iceicle {
             using namespace NUMTOOL::TENSOR::FIXED_SIZE;
             std::array<IDX, ndim> directional_nelem;
             for(int idim = 0; idim < ndim; ++idim){
-                directional_nelem[idim] = nodes_1d[idim].size() - 1;
+                directional_nelem[idim] = (nodes_1d[idim].size() - 1) / order;
             }
 
             // determine the number of nodes to generate
@@ -649,7 +650,7 @@ namespace iceicle {
             for(int idim = 0; idim < ndim; ++idim) {
                 stride_nodes[idim] = 1;
                 stride[idim] = 1;
-                nnode_dir[idim] = directional_nelem[idim] * (order) + 1;
+                nnode_dir[idim] = nodes_1d[idim].size();
                 nnodes *= nnode_dir[idim];
                 nelem *= directional_nelem[idim];
             }
