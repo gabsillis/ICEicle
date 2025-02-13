@@ -45,11 +45,21 @@ namespace iceicle::io {
                     case 2:
                         {
                             auto quad = vtkSmartPointer<vtkLagrangeQuadrilateral>::New();
-                            quad->SetOrder(geo_order, geo_order);
+                            int npoin = (geo_order + 1) * (geo_order + 1);
+                            // <rant>
+                            // VTK API drives me up a wall 
+                            // you have to set number of ids, points, and order 
+                            // or it will reset to first order 
+                            // ??? 
+                            // and naturally none of this is documented
+                            // </rant>
+                            quad->GetPointIds()->SetNumberOfIds(npoin);
+                            quad->GetPoints()->SetNumberOfPoints(npoin);
                             quad->Initialize();
+                            quad->SetOrder(geo_order, geo_order);
                             reference_hypercubes[geo_order] = quad;
                             auto tri = vtkSmartPointer<vtkLagrangeTriangle>::New();
-                            int npoin = (geo_order + 1) * (geo_order + 2) / 2;
+                            npoin = (geo_order + 1) * (geo_order + 2) / 2;
                             tri->GetPointIds()->SetNumberOfIds(npoin);
                             tri->GetPoints()->SetNumberOfPoints(npoin);
                             tri->Initialize();
@@ -66,11 +76,14 @@ namespace iceicle::io {
                     case 3:
                         {
                             auto hex = vtkSmartPointer<vtkLagrangeHexahedron>::New();
-                            hex->SetOrder(geo_order, geo_order, geo_order);
+                            int npoin = (geo_order + 1) * (geo_order + 1) * (geo_order + 1);
+                            hex->GetPointIds()->SetNumberOfIds(npoin);
+                            hex->GetPoints()->SetNumberOfPoints(npoin);
                             hex->Initialize();
+                            hex->SetOrder(geo_order, geo_order, geo_order);
                             reference_hypercubes[geo_order] = hex;
                             auto tetr = vtkSmartPointer<vtkLagrangeTetra>::New();
-                            int npoin = (geo_order + 1) * (geo_order + 2) * (geo_order + 3) / 6;
+                            npoin = (geo_order + 1) * (geo_order + 2) * (geo_order + 3) / 6;
                             tetr->GetPointIds()->SetNumberOfIds(npoin);
                             tetr->GetPoints()->SetNumberOfPoints(npoin);
                             tetr->Initialize();
