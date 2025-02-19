@@ -68,7 +68,7 @@ return {
 				0, -- top
 			},
 		},
-		geometry_order = 2,
+		geometry_order = 3,
 	},
 
 	mesh_perturbation = "taylor-green",

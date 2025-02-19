@@ -73,7 +73,7 @@ namespace iceicle {
             // ============
             // = Typedefs =
             // ============
-            using value_type = T;
+            using value_type = std::remove_cv<T>::type;
             using layout_type = LayoutPolicy;
             using accessor_type = AccessorPolicy;
             using pointer = typename std::conditional<LayoutPolicy::includes_ghost(), 
@@ -413,9 +413,12 @@ namespace iceicle {
              * @return the vector L^p norm 
              */
             template<int order = 2>
-            constexpr T vector_norm(mpi::communicator_type comm = mpi::comm_world){
+            constexpr auto 
+            vector_norm(mpi::communicator_type comm = mpi::comm_world)
+            -> value_type 
+            {
 
-                T sum = 0;
+                value_type sum = 0;
                 for(index_type idof = 0; idof < owned_ndof(comm); ++idof){
                     for(index_type iv = 0; iv < nv(); ++iv){
                         sum += std::pow(operator[](idof, iv), order);
@@ -689,7 +692,7 @@ namespace iceicle {
              */
             [[nodiscard]] constexpr inline 
             auto span_at_dof(index_type idof)
-            -> std::span<value_type>
+            -> std::span<T>
             { return std::span{_ptr + _layout[idof, 0], _ptr + _layout[idof, 0] + _layout.nv()}; }
 
             /**

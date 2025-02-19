@@ -2,6 +2,7 @@
 ///
 /// @author Gianni Absillis (gabsill@ncsu.edu)
 
+#include "iceicle/fd_utils.hpp"
 #include "iceicle/fespace/fespace.hpp"
 #include <iceicle/nonlinear_solver_utils.hpp>
 #include <limits>
@@ -60,8 +61,12 @@ namespace iceicle::solvers {
             fespan<T, uLayoutPolicy> u = ctx->u;
             Vec res = ctx->res;
 
+            // scale the epsilon
+            T eps_scaled = scale_fd_epsilon(epsilon, u.vector_norm());
+
             // create all the layouts
-            fe_layout_right u_layout{exclude_ghost(u.get_layout())};
+            fe_layout_right u_layout{u.get_layout()};
+            fe_layout_right du_layout{exclude_ghost(u_layout)};
             geo_data_layout x_layout{geo_map};
             ic_residual_layout<T, IDX, ndim, disc_class::nv_comp> ic_layout{geo_map};
 
@@ -83,9 +88,9 @@ namespace iceicle::solvers {
             component_span xp{xdata_peturb, x_layout};
             {
                 petsc::ConstVecSpan pview{p};
-                fespan du{pview, u_layout};
+                fespan du{pview, du_layout};
                 component_span dx{pview.data() + u_layout.size(), x_layout};
-                axpy(epsilon, du, up);
+                axpy(eps_scaled, du, up);
                 axpy(epsilon, dx, xp);
             }
 
@@ -102,7 +107,7 @@ namespace iceicle::solvers {
                 petsc::ConstVecSpan resview{res};
                 petsc::VecSpan yview{y};
                 for(IDX i = 0; i < resp.size(); ++i){
-                    yview[i] = (resp[i] - resview[i]) / epsilon;
+                    yview[i] = (resp[i] - resview[i]) / eps_scaled;
                 }
             }
 
@@ -153,14 +158,14 @@ namespace iceicle::solvers {
             (IDX k, Vec res_data, Vec du_data)
         {
             int iproc;
-            MPI_Comm_rank(PETSC_COMM_WORLD, &iproc);
+            MPI_Comm_rank(mpi::comm_world, &iproc);
             if(iproc == 0){
                 std::cout << "Diagnostics for iteration: " << k << std::endl;
             }
             if(iproc == 0) std::cout << "Residual: " << std::endl;
-            PetscCallAbort(PETSC_COMM_WORLD, VecView(res_data, PETSC_VIEWER_STDOUT_WORLD));
+            PetscCallAbort(mpi::comm_world, VecView(res_data, PETSC_VIEWER_STDOUT_WORLD));
             if(iproc == 0) std::cout << std::endl << "du: " << std::endl;
-            PetscCallAbort(PETSC_COMM_WORLD, VecView(du_data, PETSC_VIEWER_STDOUT_WORLD));
+            PetscCallAbort(mpi::comm_world, VecView(du_data, PETSC_VIEWER_STDOUT_WORLD));
             if(iproc == 0) std::cout << "------------------------------------------" << std::endl << std::endl; 
         };
 
@@ -177,7 +182,7 @@ namespace iceicle::solvers {
             (IDX k, Vec res_data, Vec du_data)
         {
             T res_norm;
-            PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &res_norm));
+            PetscCallAbort(mpi::comm_world, VecNorm(res_data, NORM_2, &res_norm));
             std::cout << std::setprecision(8);
             std::cout << "itime: " << std::setw(6) << k
                 << " | residual l2: " << std::setw(14) << res_norm
@@ -209,11 +214,11 @@ namespace iceicle::solvers {
 
             // setup petsc matrix and residual
             Vec r, du;
-            VecCreate(PETSC_COMM_WORLD, &r);
+            VecCreate(mpi::comm_world, &r);
             VecSetSizes(r, res_layout.owned_size(mpi::comm_world) + ic_layout.size(), PETSC_DETERMINE);
             VecSetFromOptions(r);
 
-            VecCreate(PETSC_COMM_WORLD, &du);
+            VecCreate(mpi::comm_world, &du);
             VecSetSizes(du, u.owned_size(mpi::comm_world) + geo_layout.size(), PETSC_DETERMINE);
             VecSetFromOptions(du);
 
@@ -226,7 +231,7 @@ namespace iceicle::solvers {
                 .res = r
             };
 
-            MatCreate(PETSC_COMM_WORLD, &J);
+            MatCreate(mpi::comm_world, &J);
             MatSetSizes(J, u.owned_size(mpi::comm_world) + ic_layout.size(),
                     res_layout.owned_size(mpi::comm_world) + geo_layout.size(),
                     PETSC_DETERMINE, PETSC_DETERMINE);
@@ -239,11 +244,11 @@ namespace iceicle::solvers {
             // Create the linear solver and preconditioner
             KSP ksp;
             PC pc;
-            PetscCallAbort(PETSC_COMM_WORLD, KSPCreate(PETSC_COMM_WORLD, &ksp));
-            PetscCallAbort(PETSC_COMM_WORLD, KSPSetFromOptions(ksp));
+            PetscCallAbort(mpi::comm_world, KSPCreate(PETSC_COMM_WORLD, &ksp));
+            PetscCallAbort(mpi::comm_world, KSPSetFromOptions(ksp));
 
             // default preconditioner
-            PetscCallAbort(PETSC_COMM_WORLD, KSPGetPC(ksp, &pc));
+            PetscCallAbort(mpi::comm_world, KSPGetPC(ksp, &pc));
             PCSetType(pc, PCNONE);
 
             { // get the initial residual 
@@ -264,8 +269,8 @@ namespace iceicle::solvers {
                 // Solve for the step
                 MatAssemblyBegin(J, MAT_FINAL_ASSEMBLY);
                 MatAssemblyEnd(J, MAT_FINAL_ASSEMBLY);
-                PetscCallAbort(PETSC_COMM_WORLD, KSPSetOperators(ksp, J, J));
-                PetscCallAbort(PETSC_COMM_WORLD, KSPSolve(ksp, r, du));
+                PetscCallAbort(mpi::comm_world, KSPSetOperators(ksp, J, J));
+                PetscCallAbort(mpi::comm_world, KSPSolve(ksp, r, du));
 
                 // keep the old geometry data around
                 std::vector<T> xdata(geo_layout.size());
@@ -297,7 +302,7 @@ namespace iceicle::solvers {
                         // === Compute the Update ===
 
                         petsc::VecSpan du_view{du};
-                        fespan du{du_view.data(), u.get_layout()};
+                        fespan du{du_view.data(), exclude_ghost(u.get_layout())};
                         axpy(-alpha_arg, du, u_step);
 
                         // x update
@@ -319,7 +324,7 @@ namespace iceicle::solvers {
 
                 // perform the update 
                 petsc::VecSpan du_view{du};
-                fespan duspan{du_view, u.get_layout()};
+                fespan duspan{du_view, exclude_ghost(u.get_layout())};
                 axpy(-alpha, duspan, u);
                 component_span dx{du_view.data() + u.size(), geo_layout};
                 axpy(-alpha, dx, x);
@@ -337,7 +342,7 @@ namespace iceicle::solvers {
 
                 // get the residual norm
                 T rk;
-                PetscCallAbort(PETSC_COMM_WORLD, VecNorm(r, NORM_2, &rk));
+                PetscCallAbort(mpi::comm_world, VecNorm(r, NORM_2, &rk));
 
                 // Diagnostics 
                 if(idiag > 0 && k % idiag == 0) {
@@ -363,7 +368,6 @@ namespace iceicle::solvers {
 
             return k;
         }
-
 
     };
 }

@@ -136,12 +136,23 @@ return {
 
 	-- Option 2: Regularized Gauss-Newton/Levenberg-Marquard without linesearch
 	--           using Petsc for linear solver
+	-- 	solver = {
+	-- 		ivis = 1,
+	-- 		form_subproblem_mat = true,
+	-- 		type = "lm",
+	-- 		lambda_u = 1e-10,
+	-- 		kmax = 10,
+	-- 	},
+
+	-- Option 3: Matrix Free Newton Krylov with linesearch
 	solver = {
+		type = "mfnk",
+		linesearch = {
+			type = "corrigan",
+		},
 		ivis = 1,
-		form_subproblem_mat = true,
-		type = "lm",
-		lambda_u = 1e-10,
-		kmax = 10,
+		kmax = 400,
+		tau_abs = 5e-13,
 	},
 
 	-- output
