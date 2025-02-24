@@ -7,6 +7,7 @@
 #pragma once 
 #include "iceicle/anomaly_log.hpp"
 #include "iceicle/element/finite_element.hpp"
+#include "iceicle/fe_definitions.hpp"
 #include "iceicle/fe_function/fespan.hpp"
 #include "iceicle/fe_function/geo_layouts.hpp"
 #include "iceicle/fe_function/layout_right.hpp"
@@ -14,6 +15,7 @@
 #include "iceicle/fe_function/component_span.hpp"
 #include "iceicle/fespace/fespace.hpp"
 #include "iceicle/geometry/face.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/tmp_utils.hpp"
 #include <type_traits>
 
@@ -51,7 +53,9 @@ namespace iceicle::solvers {
      *
      * @param fespace the finite element space 
      * @param disc the discretization
-     * @param u_data the 
+     * @param u the current solution 
+     * @param res the residual 
+     * @param comm the multi-process communicator
      */
     template<
         class T, 
@@ -66,9 +70,11 @@ namespace iceicle::solvers {
         FESpace<T, IDX, ndim> &fespace,
         disc_class &disc,
         fespan<T, uLayoutPolicy, uAccessorPolicy> u,
-        fespan<T, resLayoutPolicy> res
-    )
-    requires specifies_ncomp<disc_class>
+        fespan<T, resLayoutPolicy> res,
+        mpi::communicator_type comm
+    ) requires (
+            specifies_ncomp<disc_class>
+            && !decltype(res)::includes_ghost_elements())
     {
         using Element = FiniteElement<T, IDX, ndim>;
         using Trace = TraceSpace<T, IDX, ndim>;
@@ -78,168 +84,104 @@ namespace iceicle::solvers {
 
         // preallocate storage for compact views of u and res 
         const std::size_t max_local_size =
-            fespace.dg_map.max_el_size_reqirement(disc_class::nv_comp);
+            fespace.dofs.max_el_size_reqirement(disc_class::nv_comp);
         T *uL_data = new T[max_local_size];
         T *uR_data = new T[max_local_size];
         T *resL_data = new T[max_local_size];
         T *resR_data = new T[max_local_size];
 
-#ifdef ICEICLE_USE_MPI
-        int myrank, nrank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
-        MPI_Comm_size(MPI_COMM_WORLD, &nrank);
-        std::vector< std::vector< std::vector< T > > > interprocess_u(nrank);
-        for(int irank = 0; irank < nrank; ++irank) {
-            // we want to index by local element index on the other rank 
-            // so we resize to the maximum of the local element indexes we know of
-            std::vector<IDX>& recv_list = fespace.meshptr->el_recv_list[irank];
-            IDX max_iel = (recv_list.size() == 0) ? 0 : std::ranges::max(recv_list) + 1;
-            interprocess_u[irank].resize(max_iel);
-        }
-
-        // communicate inter-process element data 
-        for(int irank = 0; irank < nrank; ++irank){
-            if(irank == myrank) {
-                // send data to each process
-                for(int jrank = 0; jrank < nrank; ++jrank){
-                    for(IDX ielem : fespace.meshptr->el_send_list[jrank]){
-                        // set up the buffer and layout
-                        FiniteElement<T, IDX, ndim>& el = fespace.elements[ielem];
-                        compact_layout_right<IDX, disc_class::nv_comp> layout(el);
-                        int size = layout.size();
-                        std::vector<T> u_to_send(size);
-
-                        // copy over the data to send into the buffer
-                        dofspan uel{u_to_send, layout};
-                        extract_elspan(ielem, u, uel);
-
-                        // send the data
-                        MPI_Send(u_to_send.data(), size, mpi_get_type<T>(), jrank, ielem, MPI_COMM_WORLD);
-                    }
-                }
-            } else {
-                for(int irecv = 0; irecv < fespace.meshptr->el_recv_list[irank].size(); ++irecv){
-                    IDX ielem = fespace.meshptr->el_recv_list[irank][irecv];
-                    // set up the layout for sizing
-                    FiniteElement<T, IDX, ndim>& el = fespace.comm_elements[irank][irecv];
-                    compact_layout_right<IDX, disc_class::nv_comp> layout(el);
-                    int size = layout.size();
-                    interprocess_u[irank][ielem].resize(size);
-
-                    // get the data
-                    MPI_Recv(interprocess_u[irank][ielem].data(), size, mpi_get_type<T>(), 
-                        irank, ielem, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-#endif
+        // get the ghost element information 
+        u.sync_mpi(comm);
 
         // boundary faces 
-        for(const Trace &trace : fespace.get_boundary_traces()){
-
-            if(trace.face->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM) {
-
-#ifdef ICEICLE_USE_MPI
-                auto [jrank, imleft] = decode_mpi_bcflag(trace.face->bcflag);
-                if(imleft){
-                    // set up compact data layouts
-                    auto uL_layout = u.create_element_layout(trace.elL.elidx);
-                    dofspan uL{uL_data, uL_layout};
-                    compact_layout_right<IDX, disc_class::nv_comp> uR_layout{trace.elR};
-                    dofspan uR{interprocess_u[jrank][trace.face->elemR], uR_layout};
-
-                    auto resL_layout = res.create_element_layout(trace.elL.elidx);
-                    dofspan resL{resL_data, resL_layout};
-                    compact_layout_right<IDX, disc_class::nv_comp> resR_layout{trace.elR};
-                    dofspan resR{resR_data, resR_layout};
-
-                    // extract the compact values from the global u view
-                    extract_elspan(trace.elL.elidx, u, uL);
-
-                    // zero out residual 
-                    resL = 0;
-
-                    disc.trace_integral(trace, fespace.meshptr->coord, uL, uR, resL, resR);
-
-                    // scatter only the left
-                    scatter_elspan(trace.elL.elidx, 1.0, resL, 1.0, res);
-                } else {
-                    compact_layout_right<IDX, disc_class::nv_comp> uL_layout{trace.elL};
-                    dofspan uL{interprocess_u[jrank][trace.face->elemL], uL_layout};
-                    auto uR_layout = u.create_element_layout(trace.elR.elidx);
-                    dofspan uR{uR_data, uR_layout};
-
-
-                    compact_layout_right<IDX, disc_class::nv_comp> resL_layout{trace.elL};
-                    dofspan resL{resL_data, resL_layout};
-                    auto resR_layout = u.create_element_layout(trace.elR.elidx);
-                    dofspan resR{resR_data, resR_layout};
-
-                    // extract the compact values from the global u view
-                    extract_elspan(trace.elR.elidx, u, uR);
-
-                    // zero out residual 
-                    resR = 0;
-
-                    disc.trace_integral(trace, fespace.meshptr->coord, uL, uR, resL, resR);
-
-                    // scatter only the right
-                    scatter_elspan(trace.elR.elidx, 1.0, resR, 1.0, res);
-                }
-#else 
-                util::AnomalyLog::log_anomaly(util::Anomaly{"Built without mpi, parallel communication boundary condition will not work", util::general_anomaly_tag{}});
-#endif
-
-            } else {
-                // set up compact data views
-                auto uL_layout = u.create_element_layout(trace.elL.elidx);
-                dofspan uL{uL_data, uL_layout};
-                auto uR_layout = u.create_element_layout(trace.elR.elidx);
-                dofspan uR{uR_data, uR_layout};
-
-                auto resL_layout = res.create_element_layout(trace.elL.elidx);
-                dofspan resL{resL_data, resL_layout};
-
-                // extract the compact values from the global u view
-                extract_elspan(trace.elL.elidx, u, uL);
-                extract_elspan(trace.elR.elidx, u, uR);
-
-                // zero out the residual
-                resL = 0;
-
-                disc.boundaryIntegral(trace, fespace.meshptr->coord, uL, uR, resL);
-
-                scatter_elspan(trace.elL.elidx, 1.0, resL, 1.0, res);
-            }
-
-        }
-
-        // interior faces 
-        for(const Trace &trace : fespace.get_interior_traces()){
-            // set up compact data views
-            auto uL_layout = u.create_element_layout(trace.elL.elidx);
-            dofspan uL{uL_data, uL_layout};
-            auto uR_layout = u.create_element_layout(trace.elR.elidx);
-            dofspan uR{uR_data, uR_layout};
-
-            auto resL_layout = res.create_element_layout(trace.elL.elidx);
-            dofspan resL{resL_data, resL_layout};
-            auto resR_layout = res.create_element_layout(trace.elR.elidx);
-            dofspan resR{resR_data, resR_layout};
-
-            // extract the compact values from the global u view
-            extract_elspan(trace.elL.elidx, u, uL);
-            extract_elspan(trace.elR.elidx, u, uR);
-
-            // zero out the residual
-            resL = 0;
-            resR = 0;
-
-           disc.trace_integral(trace, fespace.meshptr->coord, uL, uR, resL, resR); 
-
-           scatter_elspan(trace.elL.elidx, 1.0, resL, 1.0, res);
-           scatter_elspan(trace.elR.elidx, 1.0, resR, 1.0, res);
-        }
+         for(const Trace &trace : fespace.get_boundary_traces()){
+ 
+             if(trace.face->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM) {
+ 
+ #ifdef ICEICLE_USE_MPI
+                   auto [jrank, imleft] = decode_mpi_bcflag(trace.face->bcflag);
+                   // set up compact data layouts
+                   auto uL_layout = u.create_element_layout(trace.elL.elidx);
+                   dofspan uL{uL_data, uL_layout};
+                   // translate the parallel index to a local one
+                   compact_layout_right<IDX, disc_class::nv_comp> uR_layout{trace.elR};
+                   dofspan uR{uR_data, uR_layout};
+  
+                   auto resL_layout = res.create_element_layout(trace.elL.elidx);
+                   dofspan resL{resL_data, resL_layout};
+                   compact_layout_right<IDX, disc_class::nv_comp> resR_layout{trace.elR};
+                   dofspan resR{resR_data, resR_layout};
+  
+                   // extract the compact values from the global u view
+                   extract_elspan(trace.elL.elidx, u, uL);
+                   extract_elspan(trace.elR.elidx, u, uR);
+  
+                   // zero out residual 
+                   resL = 0;
+                   resR = 0;
+  
+                   disc.trace_integral(trace, fespace.meshptr->coord, uL, uR, resL, resR);
+                   if(imleft){
+                       // scatter only the left
+                       scatter_elspan(trace.elL.elidx, 1.0, resL, 1.0, res);
+                   } else {
+                       // scatter only the right
+                       scatter_elspan(trace.elR.elidx, 1.0, resR, 1.0, res);
+                   }
+ #else 
+             util::AnomalyLog::log_anomaly(util::Anomaly{"Built without mpi, parallel communication boundary condition will not work", util::general_anomaly_tag{}});
+ #endif
+ 
+             } else {
+                 // set up compact data views
+                 auto uL_layout = u.create_element_layout(trace.elL.elidx);
+                 dofspan uL{uL_data, uL_layout};
+                 auto uR_layout = u.create_element_layout(trace.elR.elidx);
+                 dofspan uR{uR_data, uR_layout};
+ 
+                 auto resL_layout = res.create_element_layout(trace.elL.elidx);
+                 dofspan resL{resL_data, resL_layout};
+ 
+                 // extract the compact values from the global u view
+                 extract_elspan(trace.elL.elidx, u, uL);
+                 extract_elspan(trace.elR.elidx, u, uR);
+ 
+                 // zero out the residual
+                 resL = 0;
+ 
+                 disc.boundaryIntegral(trace, fespace.meshptr->coord, uL, uR, resL);
+ 
+                 scatter_elspan(trace.elL.elidx, 1.0, resL, 1.0, res);
+             }
+ 
+         }
+ 
+         // interior faces 
+         for(const Trace &trace : fespace.get_interior_traces()){
+             // set up compact data views
+             auto uL_layout = u.create_element_layout(trace.elL.elidx);
+             dofspan uL{uL_data, uL_layout};
+             auto uR_layout = u.create_element_layout(trace.elR.elidx);
+             dofspan uR{uR_data, uR_layout};
+ 
+             auto resL_layout = res.create_element_layout(trace.elL.elidx);
+             dofspan resL{resL_data, resL_layout};
+             auto resR_layout = res.create_element_layout(trace.elR.elidx);
+             dofspan resR{resR_data, resR_layout};
+ 
+             // extract the compact values from the global u view
+             extract_elspan(trace.elL.elidx, u, uL);
+             extract_elspan(trace.elR.elidx, u, uR);
+ 
+             // zero out the residual
+             resL = 0;
+             resR = 0;
+ 
+            disc.trace_integral(trace, fespace.meshptr->coord, uL, uR, resL, resR); 
+ 
+            scatter_elspan(trace.elL.elidx, 1.0, resL, 1.0, res);
+            scatter_elspan(trace.elR.elidx, 1.0, resR, 1.0, res);
+         }
 
         // domain integral
         for(const Element &el : fespace.elements){
@@ -290,7 +232,7 @@ namespace iceicle::solvers {
 
         // preallocate storage for compact views of u 
         const std::size_t max_local_size =
-            fespace.dg_map.max_el_size_reqirement(disc_class::dnv_comp);
+            fespace.dofs.max_el_size_reqirement(disc_class::dnv_comp);
         std::vector<T> uL_storage(max_local_size);
         std::vector<T> uR_storage(max_local_size);
         std::vector<T> res_storage{};
@@ -349,7 +291,7 @@ namespace iceicle::solvers {
 
         // preallocate storage for compact views of u 
         const std::size_t max_local_size =
-            fespace.dg_map.max_el_size_reqirement(disc_class::dnv_comp);
+            fespace.dofs.max_el_size_reqirement(disc_class::dnv_comp);
         std::vector<T> uL_storage(max_local_size);
         std::vector<T> uR_storage(max_local_size);
         std::vector<T> res_storage{};
@@ -380,74 +322,34 @@ namespace iceicle::solvers {
         }
     }
 
-    /**
-     * calculate the contiguous storage requirement to represent the dg residual and 
-     * selected mdg dofs in a single residual array 
-     */
-    template<class T, class IDX, int ndim, class disc_class, int neq_mdg>
-    auto calculate_residual_size_square_mdg(
-        FESpace<T, IDX, ndim>& fespace,
-        disc_class& disc,
-        nodeset_dof_map<IDX>& nodeset,
-        std::integral_constant<int, neq_mdg>& neq_mdg_arg
-    ) -> IDX {
-        return fespace.dg_map.calculate_size_requirement(disc_class::nv_comp())
-            + nodeset.size() * neq_mdg;
-    }
-
-    template<class T, class IDX, int ndim, class disc_class, int neq_mdg>
-    auto form_residual(
-        FESpace<T, IDX, ndim>& fespace,
-        disc_class& disc,
-        nodeset_dof_map<IDX>& nodeset,
-        std::span<T> u,
-        std::span<T> res,
-        std::integral_constant<int, neq_mdg> neq_mdg_arg
-    ) -> void {
-
-        // create all the layouts
-        fe_layout_right dg_layout{fespace.dg_map, tmp::to_size<disc_class::nv_comp>()};
-        node_selection_layout<IDX, ndim> node_layout{nodeset};
-        node_selection_layout<IDX, neq_mdg> mdg_layout{nodeset};
-
-        // create views over the u and res arrays
-        fespan u_dg{u.data(), dg_layout};
-        dofspan u_nodes{std::span{u.begin() + dg_layout.size(), u.end()}, node_layout};
-        fespan res_dg{res.data(), dg_layout};
-        dofspan res_mdg{std::span{res.begin() + dg_layout.size(), res.end()}, mdg_layout};
-
-        // set the mesh from u_nodes
-        scatter_node_selection_span(1.0, u_nodes, 0.0, fespace.meshptr->coord);
-
-        form_residual(fespace, disc, u_dg, res_dg);
-        form_mdg_residual(fespace, disc, u_dg, res_mdg);
-    }
-
     template<class T, class IDX, int ndim, class disc_class>
     auto form_residual(
-        FESpace<T, IDX, ndim>& fespace,
+        FESpace<T, IDX, ndim, l2_conformity(ndim)>& fespace,
         disc_class& disc,
         const geo_dof_map<T, IDX, ndim>& geo_map,
         std::span<T> u,
-        std::span<T> res
+        std::span<T> res,
+        mpi::communicator_type comm
     ) -> void {
 
         // create all the layouts
-        fe_layout_right dg_layout{fespace.dg_map, tmp::to_size<disc_class::nv_comp>()};
+        fe_layout_right u_layout{fespace, tmp::to_size<disc_class::nv_comp>{},
+            std::true_type{}}; // include ghost element dofs
+        fe_layout_right res_layout = exclude_ghost(u_layout);
         geo_data_layout x_layout{geo_map};
         ic_residual_layout<T, IDX, ndim, disc_class::nv_comp> ic_layout{geo_map};
 
 
         // create views over the u and res arrays
-        fespan u_dg{u.data(), dg_layout};
-        fespan res_dg{res.data(), dg_layout};
-        component_span x{std::span{u.begin() + dg_layout.size(), u.end()}, x_layout};
-        dofspan res_mdg{std::span{res.begin() + dg_layout.size(), res.end()}, ic_layout};
+        fespan u_dg{u.data(), u_layout};
+        fespan res_dg{res.data(), exclude_ghost(res_layout)};
+        component_span x{std::span{u.begin() + u_layout.size(), u.end()}, x_layout};
+        dofspan res_mdg{std::span{res.begin() + res_layout.size(), res.end()}, ic_layout};
 
         // apply the geometric parameterization to the mesh
         update_mesh(x, *(fespace.meshptr));
 
-        form_residual(fespace, disc, u_dg, res_dg);
+        form_residual(fespace, disc, u_dg, res_dg, comm);
         form_mdg_residual(fespace, disc, u_dg, geo_map, res_mdg);
     }
 }

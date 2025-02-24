@@ -1,6 +1,11 @@
 #pragma once
+#include "iceicle/iceicle_mpi_utils.hpp"
+#include "iceicle/tmp_utils.hpp"
 #include <iceicle/fe_function/layout_enums.hpp>
+#include <iceicle/fespace/fespace.hpp>
+#include <iceicle/basis/dof_mapping.hpp>
 #include <stdexcept>
+#include <type_traits>
 
 namespace iceicle {
 
@@ -87,8 +92,9 @@ namespace iceicle {
      * @tparam IDX the index type 
      * @tparam MapType the type that maps local to global dofs
      * @tparam vextent the extent of the vector component
+     * @tparam include_ghost include "ghost" elements from adjoining processes
      */
-    template<class IDX, class MapType, std::size_t vextent>
+    template<class IDX, class MapType, std::size_t vextent, bool include_ghost>
     struct fe_layout_right {
 
         // ============
@@ -108,32 +114,77 @@ namespace iceicle {
         /// heavy type: will require separate maps on host and device
         const dof_mapping_type& map_ref;
 
+        /// @brief a map of parallel indices of elements that also stores ownership information
+        const pindex_map<IDX>& element_partitioning;
+
+        /// @brief a map of the parallel indices of dofs that stores ownership information
+        const pindex_map<IDX>& dof_partitioning;
+
         /// @brief dynamic vector component if vextent is not specified
         std::enable_if<is_dynamic_size<vextent>::value, index_type> nv_d;
 
         // ================
         // = Constructors =
         // ================
-        fe_layout_right(const MapType& map_ref) 
+        
+        /// @brief Constructor from the three required mappings to define the layout 
+        /// with static extent
+        /// @param map_ref the element-wise dof mapping for the index set of this mpi rank 
+        /// @param element_partitioning a map of parallel indices between mpi ranks for the elements
+        /// @param dof_partitioning a map of parallel indices between mpi ranks for the dofs 
+        /// @param ghost_arg set to true to include degrees of freedom corresponding to interprocess chost elements
+        fe_layout_right(const MapType& map_ref, const pindex_map<IDX>& element_partitioning,
+                const pindex_map<IDX>& dof_partitioning,
+                std::integral_constant<bool, include_ghost> ghost_arg = std::false_type{}) 
+        noexcept requires( !is_dynamic_size<vextent>::value )
+        : map_ref{map_ref}, element_partitioning{element_partitioning}, dof_partitioning{dof_partitioning}
+        {}
+
+        /// @brief Constructor from the three required mappings to define the layout 
+        /// with runtime size vector component extent
+        /// @param map_ref the element-wise dof mapping for the index set of this mpi rank 
+        /// @param element_partitioning a map of parallel indices between mpi ranks for the elements
+        /// @param dof_partitioning a map of parallel indices between mpi ranks for the dofs 
+        /// @param ghost_arg set to true to include degrees of freedom corresponding to interprocess chost elements
+        fe_layout_right(const MapType& map_ref, const pindex_map<IDX>& element_partitioning,
+                const pindex_map<IDX>& dof_partitioning, index_type nv,
+                std::integral_constant<bool, include_ghost> ghost_arg = std::false_type{}) 
+        noexcept requires( is_dynamic_size<vextent>::value )
+        : map_ref{map_ref}, element_partitioning{element_partitioning}, dof_partitioning{dof_partitioning}, nv_d{nv}
+        {}
+
+        /// @brief Constructor from the three required mappings to define the layout 
+        /// with integral constant for argument deduction
+        /// @param map_ref the element-wise dof mapping for the index set of this mpi rank 
+        /// @param element_partitioning a map of parallel indices between mpi ranks for the elements
+        /// @param dof_partitioning a map of parallel indices between mpi ranks for the dofs 
+        /// @param ghost_arg set to true to include degrees of freedom corresponding to interprocess chost elements
+        fe_layout_right(const MapType& map_ref, const pindex_map<IDX>& element_partitioning,
+                const pindex_map<IDX>& dof_partitioning,
+                std::integral_constant<std::size_t, vextent>,
+                std::integral_constant<bool, include_ghost> ghost_arg = std::false_type{})
         noexcept requires(!is_dynamic_size<vextent>::value) 
-        : map_ref{map_ref} {}
+        : map_ref{map_ref}, element_partitioning{element_partitioning}, dof_partitioning{dof_partitioning} {}
 
-        /// @brief integral constant for argument deduction
-        fe_layout_right(const MapType& map_ref, std::integral_constant<std::size_t, vextent>) 
-        noexcept requires(!is_dynamic_size<vextent>::value) 
-        : map_ref{map_ref} {}
+        /// @brief construct a layout to map the degrees of freedom of the given FESpace 
+        /// with integral constant for argument deduction
+        /// @param fespace the finite element space 
+        template< class T, int conformity, int ndim >
+        fe_layout_right(
+            const FESpace<T, IDX, ndim, conformity>& fespace,
+            std::integral_constant<std::size_t, vextent>,
+            std::integral_constant<bool, include_ghost> ghost_arg = std::false_type{}
+        ) : map_ref{fespace.dofs}, element_partitioning{fespace.meshptr->element_partitioning}, 
+            dof_partitioning{fespace.dof_partitioning} {}
 
-        fe_layout_right(const MapType& map_ref, index_type nv) 
-        noexcept requires(is_dynamic_size<vextent>::value) 
-        : map_ref{map_ref}, nv_d{nv} {}
+        fe_layout_right(const fe_layout_right<IDX, dof_mapping_type, vextent, include_ghost>& other) noexcept = default;
+        fe_layout_right(fe_layout_right<IDX, dof_mapping_type, vextent, include_ghost>&& other) noexcept = default;
 
-        fe_layout_right(const fe_layout_right<IDX, dof_mapping_type, vextent>& other) noexcept = default;
-        fe_layout_right(fe_layout_right<IDX, dof_mapping_type, vextent>&& other) noexcept = default;
-
-        fe_layout_right<IDX, dof_mapping_type, vextent>& operator=(
-                const fe_layout_right<IDX, dof_mapping_type, vextent>& other) noexcept = default;
-        fe_layout_right<IDX, dof_mapping_type, vextent>& operator=(
-                fe_layout_right<IDX, dof_mapping_type, vextent>&& other) noexcept = default;
+        // reference members can't assign
+//         fe_layout_right<IDX, dof_mapping_type, vextent, include_ghost>& operator=(
+//                 const fe_layout_right<IDX, dof_mapping_type, vextent, include_ghost>& other) noexcept = default;
+//         fe_layout_right<IDX, dof_mapping_type, vextent, include_ghost>& operator=(
+//                 fe_layout_right<IDX, dof_mapping_type, vextent, include_ghost>&& other) noexcept = default;
 
         // ==============
         // = Properties =
@@ -145,41 +196,96 @@ namespace iceicle {
          * meaning that the data for a an element can be block copied 
          * to a elspan provided the layout parameters are the same
          */
-        inline static constexpr bool local_dof_contiguous() noexcept {
-            return dof_mapping_type::local_dof_contiguous(); }
+        [[nodiscard]] inline static constexpr 
+        auto local_dof_contiguous() noexcept
+        -> bool
+        { return dof_mapping_type::local_dof_contiguous(); }
 
         /// @brief static access to the extents 
-        inline static constexpr std::size_t static_extent() noexcept {
-            return vextent;
-        }
+        [[nodiscard]] inline static constexpr 
+        auto static_extent() noexcept
+        -> std::size_t 
+        { return vextent; }
 
+        /**
+         * @brief if the layout is over a view including ghost elements 
+         * then this is a read only view because writing to ghost elements 
+         * requires explicit communication
+         */
+        [[nodiscard]] inline static constexpr
+        auto includes_ghost() noexcept
+        -> bool 
+        { return include_ghost; }
 
         // =========
         // = Sizes =
         // =========
        
         /// @brief the number of elements in the index space */
-        [[nodiscard]] constexpr size_type nelem() const noexcept { return map_ref.nelem(); }
-
-        /// @brief get the number of degrees of freedom for the given element 
-        /// @param elidx the element index
-        [[nodiscard]] constexpr size_type ndof(index_type ielem) const noexcept { 
-            return map_ref.ndof_el(ielem);
+        [[nodiscard]] inline constexpr 
+        auto nelem() const noexcept 
+        -> size_type
+        { 
+            if constexpr (include_ghost) {
+                return map_ref.nelem(); 
+            } else {
+                return element_partitioning.owned_range_size(mpi::mpi_world_rank());
+            }
         }
 
+        /// @brief get the number of global degrees of freedom
+        [[nodiscard]] inline constexpr 
+        auto ndof() const noexcept
+        -> size_type
+        { 
+            if constexpr (include_ghost)
+                return map_ref.size(); 
+            else 
+                return dof_partitioning.owned_range_size(mpi::mpi_world_rank());
+        }
+
+        /// @brief get the number of degrees of freedom for the given element 
+        /// @param ielem the element index
+        [[nodiscard]] inline constexpr 
+        auto ndof(index_type ielem) const noexcept
+        -> size_type
+        { return map_ref.ndof_el(ielem); }
+
         /// @brief get the number of vector components
-        [[nodiscard]] inline constexpr std::size_t nv() const noexcept {
+        [[nodiscard]] inline constexpr 
+        auto nv() const noexcept
+        -> size_type 
+        {
             if constexpr(is_dynamic_size<vextent>::value){
                 return nv_d;
             } else {
-                return vextent;
+                return (size_type) vextent;
             }
         }
 
         /// @brief the total size of the global index space represented by this layout
-        constexpr size_type size() const noexcept {
-            return map_ref.size() * nv();
-        }
+        [[nodiscard]] inline constexpr 
+        auto size() const noexcept 
+        -> size_type 
+        { return ndof() * nv(); }
+
+        /// @brief get the number of data entries (vector components)
+        /// owned by this process
+        [[nodiscard]] inline constexpr auto owned_size(mpi::communicator_type comm)
+        -> size_type 
+        { return dof_partitioning.owned_range_size(mpi::rank(comm)) * nv(); }
+
+        /// @brief get the number of degrees of freedom accross all parallel ranks 
+        [[nodiscard]] inline constexpr 
+        auto par_ndof() const noexcept 
+        -> size_type 
+        { return dof_partitioning.size(); }
+
+        /// @brief get the number of data entries accross all parallel ranks 
+        [[nodiscard]] inline constexpr 
+        auto par_size() const noexcept 
+        -> size_type 
+        { return dof_partitioning.size() * nv(); }
 
         // ============
         // = Indexing =
@@ -204,23 +310,117 @@ namespace iceicle {
         ) const noexcept(index_noexcept) {
 #ifndef NDEBUG
             // Bounds checking version in debug
-            if(ielem < 0 || ielem >= nelem()   ) throw std::out_of_range("Element index out of range");
-            if(idof  < 0 || idof >= ndof(ielem)) throw std::out_of_range("Dof index out of range");
-            if(iv < 0    || iv >= nv()         ) throw std::out_of_range("Vector compoenent index out of range");
+            if(ielem < 0 || ielem >= nelem()    ) throw std::out_of_range("Element index out of range");
+            if(idof  < 0 || idof  >= ndof(ielem)) throw std::out_of_range("Dof index out of range");
+            if(iv    < 0 || iv    >= nv()       ) throw std::out_of_range("Vector compoenent index out of range");
 #endif
             // the global degree of freedom index
             index_type gdof = map_ref[ielem, idof];
             return gdof * nv() + iv; 
         }
+
+        /**
+         * @brief get the result of mapping from a (idof, iv) index pair 
+         * to the global index 
+         * @param igdof the global degree of freedom index 
+         * @param iv the vector component index
+         */
+        [[nodiscard]] constexpr index_type operator[](
+            index_type igdof,
+            index_type iv
+        ) const noexcept(index_noexcept) {
+#ifndef NDEBUG
+            // Bounds checking version in debug
+            if(igdof  < 0 || igdof  >= map_ref.size()) throw std::out_of_range("Dof index out of range");
+            if(iv    < 0 || iv    >= nv()       ) throw std::out_of_range("Vector compoenent index out of range");
+#endif
+            // the global degree of freedom index
+            return igdof * nv() + iv; 
+        }
+
+        /** 
+         * @brief given a process-local global degree of freedom and vector componeent index,
+         * get the parallel data index
+         */
+        [[nodiscard]] inline constexpr 
+        auto get_pindex(index_type igdof, index_type iv) const noexcept(index_noexcept)
+        -> index_type
+        { 
+#ifndef NDEBUG
+            // Bounds checking version in debug
+            if(igdof  < 0 || igdof  >= map_ref.size()) throw std::out_of_range("Dof index out of range");
+            if(iv    < 0 || iv    >= nv()       ) throw std::out_of_range("Vector compoenent index out of range");
+#endif
+            return dof_partitioning.p_indices[igdof] * nv() + iv;
+        }
+
+        /** 
+         * @brief given an index triple
+         * get the parallel data index
+         */
+        [[nodiscard]] inline constexpr 
+        auto get_pindex(index_type ielem, index_type ildof, index_type iv) const noexcept(index_noexcept)
+        -> index_type 
+        {
+#ifndef NDEBUG
+            // Bounds checking version in debug
+            if(ielem < 0 || ielem >= nelem()    ) throw std::out_of_range("Element index out of range");
+            if(ildof  < 0 || ildof  >= ndof(ielem)) throw std::out_of_range("Dof index out of range");
+            if(iv    < 0 || iv    >= nv()       ) throw std::out_of_range("Vector compoenent index out of range");
+#endif
+
+            index_type igdof = map_ref[ielem, ildof];
+            return dof_partitioning.p_indices[igdof] * nv() + iv;
+        }
     };
 
-    // deduction guides
-    template<class IDX, class MapT>
-    fe_layout_right(const MapT&, IDX nv) -> fe_layout_right<IDX, MapT, dynamic_ncomp>;
+    /// @brief cast the layout to a an index subset that excludes ghost interprocess elements
+    /// @param layout the layout to cast
+    template<class IDX, class MapT, std::size_t vextent, bool include_ghost>
+    auto exclude_ghost(fe_layout_right<IDX, MapT, vextent, include_ghost> layout)
+    noexcept -> fe_layout_right<IDX, MapT, vextent, false> 
+    {
+        if constexpr(vextent == dynamic_ncomp){
+            return fe_layout_right{layout.map_ref, layout.element_partitioning,
+                layout.dof_partitioning, layout.nv(), std::false_type{}};
+        } else {
+            return fe_layout_right{layout.map_ref, layout.element_partitioning,
+                layout.dof_partitioning, tmp::to_size<vextent>{}, std::false_type{}};
+        }
+    }
 
-    template<class MapT, std::size_t vextent>
-    fe_layout_right(const MapT&, std::integral_constant<std::size_t, vextent>)
-        -> fe_layout_right<typename MapT::index_type, MapT, vextent>; 
+    // ====================
+    // = Deduction Guides =
+    // ====================
+
+    // dynamic extent, no ghost
+    template<class IDX, class MapT>
+    fe_layout_right(const MapT&, IDX nv, const pindex_map<IDX>&, const pindex_map<IDX>&, IDX)
+    -> fe_layout_right<IDX, MapT, dynamic_ncomp, false>;
+
+    // static extent, no ghost
+    template<class IDX, class MapT, std::size_t vextent>
+    fe_layout_right(const MapT&, const pindex_map<IDX>&, const pindex_map<IDX>&,
+            std::integral_constant<std::size_t, vextent>) 
+    -> fe_layout_right<IDX, MapT, vextent, false>;
+
+    // static extent, ghost option
+    template<class IDX, class MapT, std::size_t vextent, bool use_ghost>
+    fe_layout_right(const MapT&, const pindex_map<IDX>&, const pindex_map<IDX>&,
+            std::integral_constant<std::size_t, vextent>, std::integral_constant<bool, use_ghost>) 
+    -> fe_layout_right<IDX, MapT, vextent, use_ghost>;
+
+    // fespace constructor static extent, no ghost
+    template<class T, class IDX, int ndim, int conformity, std::size_t vextent>
+    fe_layout_right(const FESpace<T, IDX, ndim, conformity>&,
+            std::integral_constant<std::size_t, vextent>)
+    -> fe_layout_right<IDX, dof_map<IDX, ndim, conformity>, vextent, false>;
+
+    // fespace constructor static extent, ghost option
+    template<class T, class IDX, int ndim, int conformity, std::size_t vextent, bool use_ghost>
+    fe_layout_right(const FESpace<T, IDX, ndim, conformity>&,
+            std::integral_constant<std::size_t, vextent>, std::integral_constant<bool, use_ghost>) 
+    -> fe_layout_right<IDX, dof_map<IDX, ndim, conformity>, vextent, use_ghost>;
 
     // === Type Aliases for clarity ===
 

@@ -1,6 +1,7 @@
 /// @brief Utilities for dealing with gmsh input files 
 /// @author Gianni Absillis (gabsill@ncsu.edu)
 
+#include "Numtool/point.hpp"
 #include "iceicle/fe_definitions.hpp"
 #include "iceicle/geometry/face.hpp"
 #include "iceicle/geometry/face_utils.hpp"
@@ -162,17 +163,25 @@ namespace iceicle {
         /// @param line the string holding the metadata for the nodes section
         /// @param line_no the current line number in the file 
         /// @param infile the input stream representing the gmsh file
+        /// @return the node coordinates and the renumbering array 
+        /// NOTE: gmsh nodes are not garuanteed to be continguous and start at 1 
+        /// This is bound to cause issues so we eliminate the gaps while reading 
+        /// and provide a renumbering 
+        /// renumbering[new_idx] = gmsh_idx
         template<class T, class IDX, int ndim>
         auto read_nodes(
             std::string line,
             std::size_t& line_no,
             std::istream& infile
-        ) -> std::optional<NodeArray<T, ndim>> {
-            
+        ) -> std::optional< std::tuple< NodeArray<T, ndim>, std::vector<IDX> > > {
+           
             // get the metadata 
             std::size_t nblocks, nnodes, min_nodetag, max_nodetag;
             sscanf(line.c_str(), "%ld %ld %ld %ld", &nblocks, &nnodes, &min_nodetag, &max_nodetag);
-            NodeArray<T, ndim> coord(max_nodetag + 1);
+            std::vector<IDX> renumbering{};
+            NodeArray<T, ndim> coord{};
+            coord.reserve(max_nodetag + 1);
+            renumbering.reserve(max_nodetag + 1);
 
             for(int iblock = 0; iblock < nblocks; ++iblock){
                 std::getline(infile, line); 
@@ -185,23 +194,24 @@ namespace iceicle {
                 linestream >> entity_dim >> entity_tag >> parametric >> n_blocknodes;
 
                 std::vector<IDX> node_idxs;
-                node_idxs.reserve(n_blocknodes);
                 for(IDX inode = 0; inode < n_blocknodes && std::getline(infile, line); ++inode, ++line_no){
                     std::istringstream linestream{line};
                     IDX node_tag;
                     linestream >> node_tag;
-                    node_idxs.push_back(node_tag);
+                    renumbering.push_back(node_tag);
                 }
 
                 for(IDX inode = 0; inode < n_blocknodes && std::getline(infile, line); ++inode, ++line_no){
                     std::istringstream linestream{line};
+                    MATH::GEOMETRY::Point<T, ndim> pt{};
                     for(int idim = 0; idim < ndim; ++idim){
-                        linestream >> coord[node_idxs[inode]][idim];
+                        linestream >> pt[idim];
                     }
+                    coord.push_back(pt);
                 }
             }
 
-            return std::optional{coord};
+            return std::optional{std::tuple{coord, renumbering}};
         }
 
         template<class IDX>
@@ -209,7 +219,8 @@ namespace iceicle {
         auto read_linear_quads(
             std::size_t nelem,
             std::size_t& line_no,
-            std::istream& infile
+            std::istream& infile,
+            const std::vector<IDX>& gmsh_idx_to_nodeidx
         ) -> std::vector<std::vector<IDX>>
         {
             using namespace util;
@@ -221,6 +232,11 @@ namespace iceicle {
                 IDX ielem_global;
                 std::istringstream linestream{line};
                 linestream >> ielem_global >> inodes[0] >> inodes[1] >> inodes[2] >> inodes[3];
+
+                // apply the renumbering
+                for(int inode = 0 ; inode < 4; ++inode){
+                    inodes[inode] = gmsh_idx_to_nodeidx[inodes[inode]];
+                }
 
                 el_conn.push_back( std::vector<IDX>{
                     inodes[0], inodes[3],
@@ -236,7 +252,8 @@ namespace iceicle {
         auto read_linear_tris(
             std::size_t nelem,
             std::size_t& line_no,
-            std::istream& infile
+            std::istream& infile,
+            const std::vector<IDX>& gmsh_idx_to_nodeidx
         ) -> std::vector<std::vector<IDX>> 
         {
             std::vector<std::vector<IDX>> el_conn;
@@ -247,6 +264,10 @@ namespace iceicle {
                 IDX ielem_global;
                 std::istringstream linestream{line};
                 linestream >> ielem_global >> inodes[0] >> inodes[1] >> inodes[2];
+
+                for(int inode = 0 ; inode < 3; ++inode){
+                    inodes[inode] = gmsh_idx_to_nodeidx[inodes[inode]];
+                }
 
                 el_conn.push_back( std::vector<IDX>{
                     inodes[0], inodes[1],
@@ -378,7 +399,8 @@ namespace iceicle {
             std::size_t& line_no,
             std::istream& infile,
             const TagMaps& tag_maps,
-            const std::map<int, std::tuple<BOUNDARY_CONDITIONS, int>>& bcmap
+            const std::map<int, std::tuple<BOUNDARY_CONDITIONS, int>>& bcmap,
+            const std::vector<IDX>& gmsh_idx_to_nodeidx
         ) -> std::optional< std::tuple< 
             std::vector< ElementTransformation<T, IDX, ndim> *>, 
             util::crs<IDX, IDX>, 
@@ -444,6 +466,8 @@ namespace iceicle {
                         
                         for(int inode = 0; inode < nnode; ++inode){
                             linestream >> fac_nodes[inode];
+                            // apply renumbering
+                            fac_nodes[inode] = gmsh_idx_to_nodeidx[fac_nodes[inode]];
                         }
                         boundary_infos.push_back(std::tuple{bc_type, bc_flag, fac_nodes});
                     }
@@ -455,7 +479,9 @@ namespace iceicle {
                         case 2:
                         {
                             auto trans = transformation_table<T, IDX, ndim>.get_transform(DOMAIN_TYPE::SIMPLEX, 1);
-                            auto conn = read_linear_tris<IDX>(nelem_block, line_no, infile);
+                            auto conn = read_linear_tris<IDX>(
+                                    nelem_block, line_no, infile, gmsh_idx_to_nodeidx);
+                            // apply the renumbering 
                             el_conn_ragged.insert(el_conn_ragged.end(), conn.begin(), conn.end());
                             for(IDX i = 0; i < nelem_block; ++i)
                                 el_transformations.push_back(trans);
@@ -464,7 +490,8 @@ namespace iceicle {
                         case 3:
                         {
                             auto trans = transformation_table<T, IDX, ndim>.get_transform(DOMAIN_TYPE::HYPERCUBE, 1);
-                            auto conn = read_linear_quads<IDX>(nelem_block, line_no, infile);
+                            auto conn = read_linear_quads<IDX>(
+                                    nelem_block, line_no, infile, gmsh_idx_to_nodeidx);
                             el_conn_ragged.insert(el_conn_ragged.end(), conn.begin(), conn.end());
                             for(IDX i = 0; i < nelem_block; ++i)
                                 el_transformations.push_back(trans);
@@ -501,12 +528,18 @@ namespace iceicle {
         /// then the nodes of the boundary face
         using boundary_face_desc = std::tuple<BOUNDARY_CONDITIONS, int, std::vector<IDX>>;
 
+        // only do this on the first rank
+        if(mpi::mpi_world_rank() != 0)
+            return AbstractMesh<T, IDX, ndim>{};
+
         // setup for parsing
         std::size_t line_no = 0;
         READER_STATE state = READER_STATE::TOP_LEVEL; 
         
         // data 
         NodeArray<T, ndim> coord;
+        std::vector<IDX> nodeidx_to_gmsh_idx;
+        std::vector<IDX> gmsh_idx_to_nodeidx;
         Header header;
         TagMaps tag_maps{};
         std::vector< ElementTransformation<T, IDX, ndim>* > el_transformations{};
@@ -573,10 +606,19 @@ namespace iceicle {
                     if(eq_icase(line, "$EndNodes")){
                         state = READER_STATE::TOP_LEVEL;
                     } else {
-                        auto coord_opt = read_nodes<T, IDX, ndim>(line, line_no, infile);
-                        if(coord_opt)
-                            coord = coord_opt.value();
-                        else 
+                        auto coord_opt = read_nodes<T, IDX, ndim>(
+                                line, line_no, infile);
+                        if(coord_opt){
+                            std::tie(coord, nodeidx_to_gmsh_idx) = coord_opt.value();
+
+                            // compute the inverse renumbering
+                            IDX max_gmsh_idx = *(std::ranges::max_element(
+                                    nodeidx_to_gmsh_idx));
+                            gmsh_idx_to_nodeidx = std::vector<IDX>(max_gmsh_idx + 1, -1);
+                            for(IDX inode = 0; inode < nodeidx_to_gmsh_idx.size(); ++inode){
+                                gmsh_idx_to_nodeidx[nodeidx_to_gmsh_idx[inode]] = inode;
+                            }
+                        } else 
                             return std::nullopt;
                     }
                     break;
@@ -585,7 +627,8 @@ namespace iceicle {
                     if(eq_icase(line, "$EndElements")){
                         state = READER_STATE::TOP_LEVEL;
                     } else {
-                        auto opt = read_elements<T, IDX, ndim>(line, line_no, infile, tag_maps, bcmap);
+                        auto opt = read_elements<T, IDX, ndim>(
+                                line, line_no, infile, tag_maps, bcmap, gmsh_idx_to_nodeidx);
                         if(opt){
                             std::tie(el_transformations, el_conn, boundary_infos) = opt.value();
                         } else {

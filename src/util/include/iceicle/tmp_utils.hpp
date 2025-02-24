@@ -35,6 +35,10 @@ namespace iceicle::tmp {
     template<class T>
     using value_type_of = std::remove_reference_t<T>::value_type;
 
+    /// @brief get a properly const qualified value type out of a range
+    template< std::ranges::range R >
+    using cv_qualified_range_value_t = std::remove_reference_t<std::ranges::range_reference_t<R>>;
+
     // =====================
     // = Variant Utilities =
     // =====================

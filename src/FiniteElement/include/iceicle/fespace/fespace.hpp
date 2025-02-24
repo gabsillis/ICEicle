@@ -13,11 +13,10 @@
 #include "iceicle/element/finite_element.hpp"
 #include <iceicle/element/reference_element.hpp>
 #include "iceicle/fe_definitions.hpp"
-#include "iceicle/fe_function/dglayout.hpp"
-#include "iceicle/fe_function/cg_map.hpp"
+#include <iceicle/basis/dof_mapping.hpp>
 #include "iceicle/geometry/face.hpp"
 #include "iceicle/geometry/geo_element.hpp"
-#include "iceicle/quadrature/QuadratureRule.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 #include <iceicle/mesh/mesh.hpp>
 #include <iceicle/tmp_utils.hpp>
 #include <Numtool/tmp_flow_control.hpp>
@@ -100,10 +99,12 @@ namespace iceicle {
      * @tparam T the numeric type 
      * @tparam IDX the index type 
      * @tparam ndim the number of dimensions
+     * @tparam conformity the conformity of degrees of freedom between elements 
+     *         index corresponds to position in exact sequence
      */
-    template<typename T, typename IDX, int ndim>
+    template<typename T, typename IDX, int ndim, int conformity = l2_conformity(ndim)>
     class FESpace {
-        public:
+    public:
 
         using ElementType = FiniteElement<T, IDX, ndim>;
         using TraceType = TraceSpace<T, IDX, ndim>;
@@ -111,25 +112,35 @@ namespace iceicle {
         using GeoFaceType = Face<T, IDX, ndim>;
         using MeshType = AbstractMesh<T, IDX, ndim>;
         using BasisType = Basis<T, ndim>;
-        using QuadratureType = QuadratureRule<T, IDX, ndim>;
 
-        /// @brief what type of finite element space is being represented
-        enum class SPACE_TYPE {
-            L2, /// L2 elements are fully discontinuous at the interfaces
-            ISOPARAMETRIC_H1, /// A continuous finite element space over the whole domain 
-                              /// Basis functions for solution are equivalent
-                              /// to basis functionss for the geometry
-        };
-
-        /// @brief what type of finite element space is being represented
-        /// by this FESpace
-        SPACE_TYPE type;
+        /// @brief get the conformity of the degrees of freedom between elements 
+        /// The index corresponds to the position in the exact sequence
+        static constexpr int conformity_class()
+        { return conformity; } 
 
         /// @brief pointer to the mesh used
         MeshType *meshptr;
 
-        /// @brief Array of finite elements in the space
-        std::vector<ElementType> elements;
+    private:
+
+        // ========================================
+        // = Maps to Basis, Quadrature, and Evals =
+        // ========================================
+
+        using ReferenceElementType = ReferenceElement<T, IDX, ndim>;
+        using ReferenceTraceType = ReferenceTraceSpace<T, IDX, ndim>;
+        std::map<FETypeKey, ReferenceElementType> ref_el_map;
+        std::map<TraceTypeKey, ReferenceTraceType> ref_trace_map;
+
+    public:
+        /// @brief Array of finite elements in the space including 
+        /// ones owned by neighboring processes 
+        /// NOTE: these are needed for computing integrals on interprocess faces
+        std::vector<ElementType> all_elements;
+
+        /// @brief view over the finite elements in the space elements
+        /// owned by this process
+        std::span<ElementType> elements;
 
         /// @brief Array of trace spaces in the space 
         std::vector<TraceType> traces;
@@ -144,11 +155,11 @@ namespace iceicle {
         /// @brief the end index of the boundary traces (exclusive)
         std::size_t bdy_trace_end;
 
-        /** @brief maps local dofs to global dofs for dg space */
-        dg_dof_map<IDX> dg_map;
+        /** @brief maps local dofs to global dofs */
+        dof_map<IDX, ndim, conformity> dofs;
 
-        /** @brief maps local dofs to global dofs for cg space */
-        cg_dof_map<T, IDX, ndim> cg_map;
+        /// @brief the parallel index partitioning of the dofs
+        pindex_map<IDX> dof_partitioning;
 
         /** @brief the mapping of faces connected to each node */
         util::crs<IDX> fac_surr_nodes;
@@ -156,55 +167,29 @@ namespace iceicle {
         /** @brief the mapping of elements connected to each node */
         util::crs<IDX, IDX> el_surr_nodes;
 
-        /** @brief the mapping of faces connected to each element */
-        util::crs<IDX> fac_surr_el;
-
-        /// @brief element information recieved from each respective MPI rank
-        std::vector<std::vector<ElementType>> comm_elements;
-
-        private:
-
-        // ========================================
-        // = Maps to Basis, Quadrature, and Evals =
-        // ========================================
-
-        using ReferenceElementType = ReferenceElement<T, IDX, ndim>;
-        using ReferenceTraceType = ReferenceTraceSpace<T, IDX, ndim>;
-        std::map<FETypeKey, ReferenceElementType> ref_el_map;
-        std::map<TraceTypeKey, ReferenceTraceType> ref_trace_map;
-
-        public:
 
         // default constructor
         FESpace() = default;
 
         // delete copy semantics
         FESpace(const FESpace &other) = delete;
-        FESpace<T, IDX, ndim>& operator=(const FESpace &other) = delete;
+        FESpace<T, IDX, ndim, conformity>& operator=(const FESpace &other) = delete;
 
         // keep move semantics
         FESpace(FESpace &&other) = default;
-        FESpace<T, IDX, ndim>& operator=(FESpace &&other) = default;
+        FESpace<T, IDX, ndim, conformity>& operator=(FESpace &&other) = default;
 
-        /**
-         * @brief construct an FESpace with uniform 
-         * quadrature rules, and basis functions over all elements 
-         *
-         * @tparam basis_order the polynomial order of 1D basis functions
-         *
-         * @param meshptr pointer to the mesh 
-         * @param basis_type enumeration of what basis to use 
-         * @param quadrature_type enumeration of what quadrature rule to use 
-         * @param basis_order_arg for template argument deduction of the basis order
-         */
+    private:
+        
         template<int basis_order>
-        FESpace(
-            MeshType *meshptr,
+        [[nodiscard]] inline constexpr 
+        auto generate_uniform_order_elements(
             FESPACE_ENUMS::FESPACE_BASIS_TYPE basis_type,
             FESPACE_ENUMS::FESPACE_QUADRATURE quadrature_type,
             tmp::compile_int<basis_order> basis_order_arg
-        ) : type{SPACE_TYPE::L2}, meshptr(meshptr), cg_map{*meshptr}, elements{} {
-
+        ) -> std::vector<ElementType>
+        {
+            std::vector<ElementType> elements;
             // Generate the Finite Elements
             elements.reserve(meshptr->nelem());
             for(ElementTransformation<T, IDX, ndim>* geo_trans : meshptr->el_transformations){
@@ -240,83 +225,183 @@ namespace iceicle {
                 // add to the elements list
                 elements.push_back(fe);
             }
+            return elements;
+        }
 
+    public:
 
+        /**
+         * @brief construct an FESpace with uniform 
+         * quadrature rules, and basis functions over all elements 
+         *
+         * @tparam basis_order the polynomial order of 1D basis functions
+         *
+         * @param meshptr pointer to the mesh 
+         * @param basis_type enumeration of what basis to use 
+         * @param quadrature_type enumeration of what quadrature rule to use 
+         * @param basis_order_arg for template argument deduction of the basis order
+         * @param serial_tag set to true to build an fespace only on this process
+         *        and ignore communication
+         */
+        template<int basis_order>
+        FESpace(
+            MeshType *meshptr,
+            FESPACE_ENUMS::FESPACE_BASIS_TYPE basis_type,
+            FESPACE_ENUMS::FESPACE_QUADRATURE quadrature_type,
+            tmp::compile_int<basis_order> basis_order_arg,
+            mpi::communicator_type comm = mpi::comm_world
+        ) requires( conformity == l2_conformity(ndim) ) 
+        // the only case we currently have general mappings for
+        : meshptr(meshptr), ref_el_map{}, ref_trace_map{}, 
+          all_elements{generate_uniform_order_elements(basis_type, quadrature_type, basis_order_arg)},
+          elements{all_elements.begin(), all_elements.begin() 
+              + meshptr->element_partitioning.owned_range_size(mpi::mpi_world_rank())},
+          dofs{all_elements}
+        {
+            // create a partitioning for the dofs
+            // TODO: generalize dof map creation and partititioning based on 
+            // conformity, mesh, element partitioning, and iterator of basis type per element
+            // probably in dof_mapping.hpp
+            IDX my_ndof = 0;
+            // count up degrees of freedom for each element that we own (not ghost)
+            for(const auto& element : elements){
+                my_ndof += element.nbasis();
+            }
+
+            std::vector<IDX> offsets{0};
+            std::vector<IDX> p_indices(my_ndof);
+            std::unordered_map< IDX, IDX > inv_p_indices{};
+
+            int nrank, myrank;
 #ifdef ICEICLE_USE_MPI
-            // ========================
-            // = Communicate Elements =
-            // ========================
-            int myrank, nrank;
-            MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
-            MPI_Comm_size(MPI_COMM_WORLD, &nrank);
+            MPI_Comm_rank(comm, &myrank);
+            MPI_Comm_size(comm, &nrank);
+#else 
+            nrank = 1;
+            myrank = 0;
+#endif
 
-            comm_elements.resize(nrank);
 
-            // set up the communicated FiniteElements only if more than 1 process
+            // generate p_indices and offsets for our element dofs
             for(int irank = 0; irank < nrank; ++irank){
-                // basis order, quadrature_type, and basis_type we know
-                int geometry_order, domain_type;
-                for(auto& geo_el_info : meshptr->communicated_elements[irank]){
-                    
-                    // create the Element Domain type key
-                    FETypeKey fe_key = {
-                        .domain_type = geo_el_info.trans->domain_type,
-                        .basis_order = basis_order,
-                        .geometry_order = geo_el_info.trans->order,
-                        .qtype = quadrature_type,
-                        .btype = basis_type
-                    };
-
-                    // check if an evaluation doesn't exist yet
-                    if(ref_el_map.find(fe_key) == ref_el_map.end()){
-                        ref_el_map[fe_key] = ReferenceElementType(geo_el_info.trans->domain_type,
-                                geo_el_info.trans->order, basis_type, quadrature_type, basis_order_arg);
-                    }
-                    ReferenceElementType &ref_el = ref_el_map[fe_key];
-                
-                    // create the finite element
-                    ElementType fe(
-                        geo_el_info.trans,
-                        ref_el.basis.get(),
-                        ref_el.quadrule.get(),
-                        std::span<const BasisEvaluation<T, ndim>>{ref_el.evals},
-                        geo_el_info.conn_el,
-                        geo_el_info.coord_el,
-                        elements.size() // this will be the index of the new element
-                    );
-
-                    comm_elements[irank].push_back(fe);
+                IDX ndof = my_ndof;
+#ifdef ICEICLE_USE_MPI
+                MPI_Bcast(&ndof, 1, mpi_get_type(ndof), irank, comm);
+                offsets.push_back(offsets[irank] + ndof);
+#endif
+                if(irank == myrank){
+                    std::iota(p_indices.begin(), p_indices.end(), offsets[irank]);
                 }
             }
+
+            // generate the p_indices for ghost element dofs
+            std::vector< std::vector< IDX > > p_ielem_requests(nrank);
+            for(IDX ielem = elements.size(); ielem < all_elements.size(); ++ielem){
+                IDX p_ielem = meshptr->element_partitioning.p_indices[ielem];
+                p_ielem_requests[meshptr->element_partitioning.owning_rank(p_ielem)].push_back(p_ielem);
+            }
+#ifdef ICEICLE_USE_MPI
+            std::vector<MPI_Request> requests;
+            for(int irank = 0; irank < nrank; ++irank){
+                if(irank != myrank){
+                    requests.emplace_back();
+                    MPI_Isend(p_ielem_requests[irank].data(), p_ielem_requests[irank].size(), 
+                            mpi_get_type(p_ielem_requests[irank].data()), irank, 0, comm, &requests.back());
+                }
+            }
+            // build arrays of pdofs to send
+            std::vector<std::vector<IDX>> send_pdofs(nrank); // array of pdofs contiguous for requested elements
+            std::vector<std::vector<IDX>> send_sizes(nrank); // array of number of degrees of freedom for each element requested
+            for(int irank = 0; irank < nrank; ++irank){
+                if(irank != myrank){
+                    MPI_Status status;
+                    MPI_Probe(irank, 0, comm, &status);
+                    int recv_sz;
+                    MPI_Get_count(&status, mpi_get_type<IDX>(), &recv_sz);
+                    std::vector<IDX> p_iel_to_send(recv_sz);
+                    MPI_Recv(p_iel_to_send.data(), recv_sz, mpi_get_type(p_iel_to_send.data()),
+                            irank, 0, comm, MPI_STATUS_IGNORE);
+                    for(IDX p_ielem : p_iel_to_send){
+                        IDX ielem = meshptr->element_partitioning.inv_p_indices[p_ielem];
+                        for(IDX ldof : dofs.rowview(ielem)){
+                            send_pdofs[irank].push_back(p_indices[ldof]);
+                        }
+                        send_sizes[irank].push_back(dofs.ndof_el(ielem));
+                    }
+                }
+            }
+            // wait for isends
+            MPI_Waitall(requests.size(), requests.data(), MPI_STATUSES_IGNORE);
+            requests.clear();
+            // send the pdof arrays
+            for(int irank = 0; irank < nrank; ++irank){
+                if(irank != myrank){
+                    requests.emplace_back();
+                    MPI_Isend(send_pdofs[irank].data(), send_pdofs[irank].size(), 
+                            mpi_get_type(send_pdofs[irank].data()), irank, 1, comm, &requests.back());
+                    requests.emplace_back();
+                    MPI_Isend(send_sizes[irank].data(), send_sizes[irank].size(), 
+                            mpi_get_type(send_sizes[irank].data()), irank, 2, comm, &requests.back());
+                }
+            }
+            // recieve and process the pdof arrays
+            {
+                std::vector<std::vector<IDX>> ghost_el_pdofs(all_elements.size() - elements.size());
+                for(int irank = 0; irank < nrank; ++irank){
+                    if(irank != myrank){
+                        MPI_Status status;
+                        MPI_Probe(irank, 1, comm, &status);
+                        int recv_sz;
+                        MPI_Get_count(&status, mpi_get_type<IDX>(), &recv_sz);
+                        std::vector<IDX> pdofs(recv_sz);
+                        MPI_Recv(pdofs.data(), recv_sz, mpi_get_type(pdofs.data()),
+                                irank, 1, comm, MPI_STATUS_IGNORE);
+
+                        MPI_Probe(irank, 2, comm, &status);
+                        MPI_Get_count(&status, mpi_get_type<IDX>(), &recv_sz);
+                        std::vector<IDX> ndof_el(recv_sz);
+                        MPI_Recv(ndof_el.data(), recv_sz, mpi_get_type(ndof_el.data()),
+                                irank, 2, comm, MPI_STATUS_IGNORE);
+
+                        auto pdof_it = pdofs.begin();
+                        for(IDX iel = 0; iel < ndof_el.size(); ++iel){
+                            IDX p_ielem = p_ielem_requests[irank][iel];
+                            IDX ielem_local = meshptr->element_partitioning.inv_p_indices[p_ielem];
+                            for(int idof = 0; idof < ndof_el[iel]; ++idof, ++pdof_it){
+                                ghost_el_pdofs[ielem_local - elements.size()].push_back(*pdof_it);
+                            }
+                        }
+                    }
+                }
+                for(auto& el_pdofs : ghost_el_pdofs){
+                    p_indices.insert(p_indices.end(), el_pdofs.begin(), el_pdofs.end());
+                }
+
+            }
+            MPI_Waitall(requests.size(), requests.data(), MPI_STATUSES_IGNORE);
+            requests.clear();
+            for(IDX lindex = 0; lindex < p_indices.size(); ++lindex){
+                inv_p_indices[p_indices[lindex]] = lindex;
+            }
 #endif
+            dof_partitioning = pindex_map{p_indices, inv_p_indices, offsets};
 
             // Generate the Trace Spaces
             traces.reserve(meshptr->faces.size());
             for(const auto& fac : meshptr->faces){
                 // NOTE: assuming element indexing is the same as the mesh still
+                IDX elemL = fac->elemL;
+                IDX elemR = fac->elemR;
 
-                bool is_interior = fac->bctype == BOUNDARY_CONDITIONS::INTERIOR;
-                ElementType *elptrL = &elements[fac->elemL];
-                ElementType *elptrR = (is_interior) ? &elements[fac->elemR] : &elements[fac->elemL];
+                // parallel bdy faces are essentially also interior faces 
+                // aside from being a bit *special* :3
+                // NOTE: the ghost element index has already been translated to local element indices
+                bool is_interior = 
+                    fac->bctype == BOUNDARY_CONDITIONS::INTERIOR 
+                    or fac->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM;
+                ElementType *elptrL = &all_elements[elemL];
+                ElementType *elptrR = (is_interior) ? &all_elements[elemR] : &all_elements[elemL];
 
-#ifdef ICEICLE_USE_MPI
-            // update the boundary trace spaces to use the new communicated FiniteElements
-                if(fac->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM) {
-                    auto [jrank, imleft] = decode_mpi_bcflag(fac->bcflag);
-                    IDX jlocal_elidx = (imleft) ? fac->elemR : fac->elemL;
-
-                    std::vector<IDX> &comm_el_idxs = meshptr->el_recv_list[jrank];
-                    auto itr = lower_bound(comm_el_idxs.begin(), comm_el_idxs.end(), jlocal_elidx);
-                    std::size_t index = distance(comm_el_idxs.begin(), itr);
-
-                    if(imleft){
-                        elptrR = &(comm_elements[jrank].at(index));
-                    } else {
-                        elptrL = &(comm_elements[jrank].at(index));
-                        elptrR = &elements[fac->elemR]; // special case because parallel faces are essential interior
-                    }
-                }
-#endif
                 ElementType& elL = *elptrL;
                 ElementType& elR = *elptrR;
 
@@ -377,9 +462,6 @@ namespace iceicle {
             bdy_trace_start = meshptr->bdyFaceStart;
             bdy_trace_end = meshptr->bdyFaceEnd;
 
-            // generate the dof offsets 
-            dg_map = dg_dof_map{elements};
-
             // ===================================
             // = Build the connectivity matrices =
             // ===================================
@@ -395,33 +477,17 @@ namespace iceicle {
             fac_surr_nodes = util::crs{connectivity_ragged};
 
             el_surr_nodes = util::crs{meshptr->elsup};
-
-            std::vector<std::vector<IDX>> fac_surr_el_ragged(elements.size());
-            for(int itrace = 0; itrace < traces.size(); ++itrace) {
-                const TraceType& trace = traces[itrace];
-                if(trace.face->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM){
-                    // take some extra care to not add the wrong element index
-                    auto [jrank, imleft] = decode_mpi_bcflag(trace.face->bcflag);
-                    if(imleft){
-                        fac_surr_el_ragged[trace.elL.elidx].push_back(itrace);
-                    } else {
-                        fac_surr_el_ragged[trace.elR.elidx].push_back(itrace);
-                    }
-                } else {
-                    fac_surr_el_ragged[trace.elL.elidx].push_back(itrace);
-                    fac_surr_el_ragged[trace.elR.elidx].push_back(itrace);
-                }
-            }
-            fac_surr_el = util::crs{fac_surr_el_ragged};
         } 
 
         /// @brief construct an FESpace that represents an isoparametric CG space
         /// to the given mesh 
         /// @param meshptr pointer to the mesh
-        FESpace(MeshType *meshptr) : type{SPACE_TYPE::ISOPARAMETRIC_H1}, meshptr(meshptr), cg_map{*meshptr}, elements{} {
+        FESpace(MeshType *meshptr) 
+        requires(conformity == h1_conformity(ndim))
+        : meshptr(meshptr), elements{}, dofs{meshptr->conn_el}, dof_partitioning{meshptr->node_partitioning}{
             
             // Generate the Finite Elements
-            elements.reserve(meshptr->nelem());
+            all_elements.reserve(meshptr->nelem());
             for(ElementTransformation<T, IDX, ndim>* geo_trans : meshptr->el_transformations){
                 // create the Element Domain type key
                 FETypeKey fe_key = {
@@ -439,7 +505,7 @@ namespace iceicle {
                 ReferenceElementType &ref_el = ref_el_map[fe_key];
                
                 // this will be the index of the new element
-                IDX ielem = elements.size();
+                IDX ielem = all_elements.size();
 
                 // create the finite element
                 ElementType fe{
@@ -453,84 +519,24 @@ namespace iceicle {
                 };
 
                 // add to the elements list
-                elements.push_back(fe);
+                all_elements.push_back(fe);
             }
 
-#ifdef ICEICLE_USE_MPI
-            // ========================
-            // = Communicate Elements =
-            // ========================
-            int myrank, nrank;
-            MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
-            MPI_Comm_size(MPI_COMM_WORLD, &nrank);
+            /// 
+            elements = std::span{all_elements.begin(),
+                all_elements.begin() + meshptr->element_partitioning.owned_range_size(mpi::mpi_world_rank())};
 
-            comm_elements.resize(nrank);
-
-            // set up the communicated FiniteElements only if more than 1 process
-            for(int irank = 0; irank < nrank; ++irank){
-                // basis order, quadrature_type, and basis_type we know
-                int geometry_order, domain_type;
-                for(auto& comm_el : meshptr->communicated_elements[irank]){
-                    
-                    FETypeKey fe_key = {
-                        .domain_type = comm_el.trans->domain_type,
-                        .basis_order = comm_el.trans->order,
-                        .geometry_order = comm_el.trans->order,
-                        .qtype = FESPACE_ENUMS::FESPACE_QUADRATURE::GAUSS_LEGENDRE,
-                        .btype = FESPACE_ENUMS::FESPACE_BASIS_TYPE::LAGRANGE 
-                    };
-
-                    // check if an evaluation doesn't exist yet
-                    if(ref_el_map.find(fe_key) == ref_el_map.end()){
-                        ref_el_map[fe_key] = ReferenceElementType(comm_el.trans->domain_type, comm_el.trans->order);
-                    }
-                    ReferenceElementType &ref_el = ref_el_map[fe_key];
-                
-                    // this will be the index of the new element
-                    IDX ielem = elements.size();
-
-                    // create the finite element
-                    ElementType fe{
-                        .trans = comm_el.trans, 
-                        .basis = ref_el.basis.get(),
-                        .quadrule = ref_el.quadrule.get(),
-                        .qp_evals = std::span<const BasisEvaluation<T, ndim>>{ref_el.evals},
-                        .inodes = comm_el.conn_el, // NOTE: meshptr cannot invalidate anymore
-                        .coord_el = comm_el.coord_el,
-                        .elidx = ielem
-                    };
-
-                    comm_elements[irank].push_back(fe);
-                }
-            }
-#endif
             // Generate the Trace Spaces
             traces.reserve(meshptr->faces.size());
             for(const auto& fac : meshptr->faces){
                 // NOTE: assuming element indexing is the same as the mesh still
-
-                bool is_interior = fac->bctype == BOUNDARY_CONDITIONS::INTERIOR;
-                ElementType *elptrL = &elements[fac->elemL];
-                ElementType *elptrR = (is_interior) ? &elements[fac->elemR] : &elements[fac->elemL];
-
-#ifdef ICEICLE_USE_MPI
-            // update the boundary trace spaces to use the new communicated FiniteElements
-                if(fac->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM) {
-                    auto [jrank, imleft] = decode_mpi_bcflag(fac->bcflag);
-                    IDX jlocal_elidx = (imleft) ? fac->elemR : fac->elemL;
-
-                    std::vector<IDX> &comm_el_idxs = meshptr->el_recv_list[jrank];
-                    auto itr = lower_bound(comm_el_idxs.begin(), comm_el_idxs.end(), jlocal_elidx);
-                    std::size_t index = distance(comm_el_idxs.begin(), itr);
-
-                    if(imleft){
-                        elptrR = &(comm_elements[jrank].at(index));
-                    } else {
-                        elptrL = &(comm_elements[jrank].at(index));
-                        elptrR = &elements[fac->elemR]; // special case because parallel faces are essential interior
-                    }
-                }
-#endif
+                // NOTE: treating parallel com as interior for element indexing purposes
+                // parallel bdy faces are essentially also interior faces 
+                // aside from being a bit *special* :3
+                bool is_interior = fac->bctype == BOUNDARY_CONDITIONS::INTERIOR 
+                    || fac->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM;
+                ElementType *elptrL = &all_elements[fac->elemL];
+                ElementType *elptrR = (is_interior) ? &all_elements[fac->elemR] : &all_elements[fac->elemL];
                 ElementType& elL = *elptrL;
                 ElementType& elR = *elptrR;
 
@@ -560,9 +566,7 @@ namespace iceicle {
                     }
                     ReferenceTraceType &ref_trace = ref_trace_map[trace_key];
                     
-                    if(is_interior || fac->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM){
-                        // parallel bdy faces are essentially also interior faces 
-                        // aside from being a bit *special* :3
+                    if(is_interior){
                         TraceType trace{ fac.get(), &elL, &elR, ref_trace.trace_basis.get(),
                             ref_trace.quadrule.get(), 
                             std::span<const BasisEvaluation<T, ndim>>{ref_trace.evals_l},
@@ -594,9 +598,6 @@ namespace iceicle {
             bdy_trace_start = meshptr->bdyFaceStart;
             bdy_trace_end = meshptr->bdyFaceEnd;
 
-            // generate the dof offsets 
-            dg_map = dg_dof_map{elements};
-
             // ===================================
             // = Build the connectivity matrices =
             // ===================================
@@ -619,29 +620,36 @@ namespace iceicle {
                 if(trace.face->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM){
                     // take some extra care to not add the wrong element index
                     auto [jrank, imleft] = decode_mpi_bcflag(trace.face->bcflag);
-                    if(imleft){
-                        fac_surr_el_ragged[trace.elL.elidx].push_back(itrace);
-                    } else {
-                        fac_surr_el_ragged[trace.elR.elidx].push_back(itrace);
-                    }
+                    IDX iel_internal = (imleft) ?
+                        trace.elL.elidx
+                        : trace.elR.elidx;
+
+                    fac_surr_el_ragged[iel_internal].push_back(itrace);
                 } else {
                     fac_surr_el_ragged[trace.elL.elidx].push_back(itrace);
                     fac_surr_el_ragged[trace.elR.elidx].push_back(itrace);
                 }
             }
-            fac_surr_el = util::crs{fac_surr_el_ragged};
         }
 
         /**
-         * @brief get the number of dg degrees of freedom in the entire fespace 
+         * @brief get the number of degrees of freedom in the entire fespace 
          * multiply this by the nummber of components to get the size requirement for 
-         * a dg fespan or use the built_in function in the dg_map member
-         * @return the number of dg degrees of freedom
+         * an fespan or use the built_in function in the dof_map member
+         * @return the number of degrees of freedom
          */
-        constexpr std::size_t ndof_dg() const noexcept
+        constexpr std::size_t ndof() const noexcept
         {
-            return dg_map.calculate_size_requirement(1);
+            return dofs.calculate_size_requirement(1);
         }
+
+        /**
+         * @brief get the number of degrees of freedom owned by this process 
+         */
+        [[nodiscard]] inline constexpr
+        auto owned_ndof(mpi::communicator_type comm) const noexcept
+        -> std::size_t
+        { return dof_partitioning.owned_range_size(mpi::rank(comm)); }
 
         /**
          * @brief get the span that is the subset of the trace space list 
@@ -663,24 +671,66 @@ namespace iceicle {
                 traces.begin() + bdy_trace_end};
         }
 
+        /**
+         * @brief get the element partitioning map 
+         */
+        [[nodiscard]] inline constexpr 
+        auto element_partitioning() const noexcept
+        -> pindex_map<IDX>&
+        { return meshptr->element_partitioning; }
+
         auto print_info(std::ostream& out)
         -> std::ostream& {
-            out << "Finite Element Space" << std::endl;
-            switch(type){
-                case SPACE_TYPE::L2:
-                    out << "Space Type: ";
-                    out << "L2" << std::endl;
-                    out << "ndof: " << dg_map.size() << std::endl;
-                    break;
-                case SPACE_TYPE::ISOPARAMETRIC_H1:
-                    out << "Space Type: ";
-                    out << "H1 (isoparametric)" << std::endl;
-                    out << "ndof: " << cg_map.size() << std::endl;
-                    break;
+            mpi::execute_on_rank(0, [&]{
+                out << "Finite Element Space" << std::endl;
+                switch(conformity){
+                    case l2_conformity(ndim):
+                        out << "Space Type: ";
+                        out << "L2" << std::endl;
+                        break;
+                    case h1_conformity(ndim):
+                        out << "Space Type: ";
+                        out << "H1 (isoparametric)" << std::endl;
+                        break;
+                }
+                IDX ndof_global = dof_partitioning.size();
+                out << "ndof: " << ndof_global << std::endl;
+            });
+            for(int irank = 0; irank < mpi::mpi_world_size(); ++irank){
+                IDX total_ndof = ndof();
+                IDX recv_total_ndof = ndof();
+#ifdef ICEICLE_USE_MPI
+                if(mpi::mpi_world_rank() == irank and irank != 0){
+                    MPI_Send(&total_ndof, 1, mpi_get_type<IDX>(), 0, 0, mpi::comm_world);
+                }
+#endif
+                if(mpi::mpi_world_rank() == 0){
+#ifdef ICEICLE_USE_MPI
+                    if(irank != 0)
+                        MPI_Recv(&total_ndof, 1, mpi_get_type<IDX>(), irank, 0, mpi::comm_world, MPI_STATUS_IGNORE);
+#endif
+                    out << "process " << irank << " | total_ndof: " << recv_total_ndof;
+                    out << " | owned_ndof: " << dof_partitioning.owned_range_size(irank) << std::endl;
+                }
             }
             return out;
         }
 
     };
-    
+
+    // Deduction Guides 
+
+    // Isoparametric CG constructor
+    template<class T, class IDX, int ndim>
+    FESpace(AbstractMesh<T, IDX, ndim>*)
+    -> FESpace<T, IDX, ndim, h1_conformity(ndim)>;
+
+    // Uniform basis order DG constructor
+    template<class T, class IDX, int ndim, int basis_order>
+    FESpace(
+        AbstractMesh<T, IDX, ndim> *meshptr,
+        FESPACE_ENUMS::FESPACE_BASIS_TYPE basis_type,
+        FESPACE_ENUMS::FESPACE_QUADRATURE quadrature_type,
+        tmp::compile_int<basis_order> basis_order_arg
+    ) -> FESpace<T, IDX, ndim, l2_conformity(ndim)>;
 }

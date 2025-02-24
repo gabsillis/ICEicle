@@ -19,7 +19,7 @@ if(Doxygen_FOUND)
 
   file(MAKE_DIRECTORY ${DOXYGEN_OUTPUT_DIR}) #Doxygen won't create this for us
   add_custom_command(OUTPUT ${DOXYGEN_INDEX_FILE}
-                    DEPENDS ${CAT_CUTIFIER_PUBLIC_HEADERS}
+                    DEPENDS ${ICEICLE_PUBLIC_HEADERS}
                     COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYFILE_OUT}
                     MAIN_DEPENDENCY ${DOXYFILE_OUT} ${DOXYFILE_IN}
                     COMMENT "Generating docs")
@@ -46,6 +46,10 @@ if(Doxygen_FOUND)
                       DEPENDS
                       # Other docs files you want to track should go here (or in some variable)
                       ${CMAKE_CURRENT_SOURCE_DIR}/index.rst
+                      ${CMAKE_CURRENT_SOURCE_DIR}/technical_background.rst
+                      ${CMAKE_CURRENT_SOURCE_DIR}/install.rst
+                      ${CMAKE_CURRENT_SOURCE_DIR}/iceicle_api.rst
+                      ${CMAKE_CURRENT_SOURCE_DIR}/lua_api.rst
                       ${DOXYGEN_INDEX_FILE}
                       MAIN_DEPENDENCY ${SPHINX_SOURCE}/conf.py
                       COMMENT "Generating documentation with Sphinx")

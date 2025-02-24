@@ -99,10 +99,10 @@ return {
 		linesearch = {
 			type = "none",
 		},
-		lambda_b = 1e-5,
+		lambda_b = 1e-6,
 		lambda_u = 1e-12,
 		ivis = 1,
-		tau_abs = 1e-15,
+		tau_abs = 1e-10,
 		tau_rel = 0,
 		kmax = 800,
 	},

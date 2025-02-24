@@ -2,38 +2,55 @@
 /// @author Gianni Absillis (gabsill@ncsu.edu)
 
 #pragma once
-#include "iceicle/anomaly_log.hpp"
+#ifdef ICEICLE_USE_VTK
+#include "iceicle/vtk_writer.hpp"
+#endif
 #include "iceicle/pvd_writer.hpp"
 #include <iceicle/fespace/fespace.hpp>
 #include <iceicle/dat_writer.hpp>
 #include <memory>
 namespace iceicle::io {
 
-
     /// @brief external function interface for type erasure to write a file 
     /// writes the file with the given time index and time values 
-    template<class T, class IDX, int ndim>
-    auto write_file(DatWriter<T, IDX, ndim>& writer, int itime, T time) -> void {
+    template<class T, class IDX, int ndim, int conformity>
+    auto write_file(DatWriter<T, IDX, ndim, conformity>& writer, int itime, double time) -> void {
         writer.write_dat(itime, time);
     }
 
     /// @brief external function interface for type erasure to write a file 
     /// writes the file with the given time index and time values 
-    template<class T, class IDX, int ndim>
-    auto write_file(PVDWriter<T, IDX, ndim>& writer, int itime, T time) -> void {
+    template<class T, class IDX, int ndim, int conformity>
+    auto write_file(PVDWriter<T, IDX, ndim, conformity>& writer, int itime, double time) -> void {
         writer.write_vtu(itime, time);
     }
 
+#ifdef ICEICLE_USE_VTK
+    // Writer concept requirements 
+    template<class T, class IDX, int ndim, int conformity>
+    inline
+    auto write_file(const PVTUWriter<T, IDX, ndim, conformity>& writer, int itime, double time)
+    -> void 
+    { writer.write(itime, time); }
+
+    namespace impl {
+        template<class T, class IDX, int ndim, int conformity>
+        auto rename_collection(PVTUWriter<T, IDX, ndim, conformity>& writer, std::string_view new_name)
+        -> void
+        { writer.rename_collection(new_name); }
+    }
+#endif
+
     namespace impl {
         /// @brief external function interface for type erasure to rename the collection
-        template<class T, class IDX, int ndim>
-        auto rename_collection(DatWriter<T, IDX, ndim>& writer, std::string_view new_name)-> void {
+        template<class T, class IDX, int ndim, int conformity>
+        auto rename_collection(DatWriter<T, IDX, ndim, conformity>& writer, std::string_view new_name)-> void {
             writer.collection_name = new_name;
         }
 
         /// @brief external function interface for type erasure to rename the collection
-        template<class T, class IDX, int ndim>
-        auto rename_collection(PVDWriter<T, IDX, ndim>& writer, std::string_view new_name) -> void {
+        template<class T, class IDX, int ndim, int conformity>
+        auto rename_collection(PVDWriter<T, IDX, ndim, conformity>& writer, std::string_view new_name) -> void {
             writer.collection_name = new_name;
         }
     }
@@ -69,7 +86,7 @@ namespace iceicle::io {
             WriterT _writer;
 
             /// @brief construct from a writer 
-            WriterModel(WriterT writer) : _writer{std::move(writer)}{} ;
+            WriterModel(WriterT writer) : _writer{std::move(writer)}{}
 
             /// @brief write to file 
             /// @param itime the time index 
@@ -83,6 +100,7 @@ namespace iceicle::io {
                 impl::rename_collection(_writer, new_name);
             }
 
+            /// @brief copy the model to a new unique_ptr
             auto clone() const -> std::unique_ptr<WriterConcept> override {
                 return std::make_unique<WriterModel>(*this);
             }

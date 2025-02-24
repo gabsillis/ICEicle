@@ -1,6 +1,7 @@
 #include <fenv.h>
 #include <cmath>
 #include <iceicle/program_args.hpp>
+#include <ios>
 #include <sol/sol.hpp>
 #include <iceicle/mesh/mesh_lua_interface.hpp>
 #include <iceicle/mesh/mesh_partition.hpp>
@@ -157,6 +158,10 @@ int main(int argc, char *argv[]) {
                "enable floating point exceptions (ignoring FE_INEXACT)"},
       cli_option{"scriptfile", "The file name for the lua script to run",
                  parse_type<std::string_view>{}},
+      cli_option{"sigma_ic", "the interface correction multiplier (1.0 is ddgic)", 
+                 parse_type<double>{}},
+      cli_flag{"interior_penalty",
+                "Disable the ddg second derivative terms to create an interior penalty formulation"},
       cli_flag{"debug1", "internal debug flag"},
       cli_flag{"debug2", "internal debug flag"});
   if (cli_args["help"]) {
@@ -241,7 +246,14 @@ int main(int argc, char *argv[]) {
   navier_stokes::DiffusionFlux diffusion_flux{physics, std::true_type{}};
 
   ConservationLawDDG conservation_law{std::move(flux), std::move(numflux), std::move(diffusion_flux)};
-  // conservation_law.interior_penalty = true;
+  if(cli_args["sigma_ic"])
+    conservation_law.sigma_ic = cli_args["sigma_ic"].as<double>();
+  if(cli_args["interior_penalty"])
+    conservation_law.interior_penalty = true;
+
+  std::cout << "Interface Correction multiplier: " << conservation_law.sigma_ic << std::endl;
+  std::cout << "Interior Penalty Flag: " << std::boolalpha << conservation_law.interior_penalty << std::endl;
+
   conservation_law.user_source = std::function{source};
   conservation_law.field_names = std::vector<std::string>{"rho", "rhou"};
   conservation_law.residual_names = std::vector<std::string>{"density_conservation", "momentum_u_conservation"};
@@ -261,13 +273,13 @@ int main(int argc, char *argv[]) {
   // ==============================
   // = Initialize Solution Vector =
   // ==============================
-  fe_layout_right u_layout{fespace.dg_map, to_size<neq>{}};
+  fe_layout_right u_layout{fespace, to_size<neq>{}, std::true_type{}};
   std::vector<T> u_data(u_layout.size());
   fespan u{u_data.data(), u_layout};
   projection_initialization(fespace, std::function{initial_condition}, tmp::compile_int<neq>{}, u);
   // projection_initialization(fespace, std::function{exact}, tmp::compile_int<neq>{}, u);
 
-  io::PVDWriter<T, IDX, ndim> pvd_writer{};
+  io::PVDWriter<T, IDX, ndim, l2_conformity(ndim)> pvd_writer{};
   pvd_writer.register_fespace(fespace);
   pvd_writer.register_fields(u, conservation_law.field_names);
   pvd_writer.collection_name = "initial_condition";

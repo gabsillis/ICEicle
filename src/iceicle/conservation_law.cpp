@@ -9,6 +9,7 @@
 #include "iceicle/dat_writer.hpp"
 #include "iceicle/disc/bc_lua_interface.hpp"
 #include "iceicle/disc/burgers.hpp"
+#include "iceicle/disc/conservation_law_lua_interface.hpp"
 #include "iceicle/disc/navier_stokes.hpp"
 #include "iceicle/fespace/fespace_lua_interface.hpp"
 #include "iceicle/geometry/face.hpp"
@@ -73,10 +74,11 @@ public:
   }
 };
 
-template <class T, class IDX, int ndim, class pflux, class cflux, class dflux>
+template <class T, class IDX, int ndim, int conformity, class pflux, class cflux, class dflux>
 void initialize_and_solve(
-    sol::table config_tbl, FESpace<T, IDX, ndim> &fespace,
+    sol::table config_tbl, FESpace<T, IDX, ndim, conformity> &fespace,
     ConservationLawDDG<T, ndim, pflux, cflux, dflux> &conservation_law) {
+  using DiscType = ConservationLawDDG<T, ndim, pflux, cflux, dflux>;
 
   // ==============================
   // = Set Discretization Options =
@@ -85,13 +87,16 @@ void initialize_and_solve(
     // discretization options
     conservation_law.sigma_ic = cons_law_tbl.get_or("sigma_ic", conservation_law.sigma_ic);
     conservation_law.interior_penalty = cons_law_tbl.get_or("interior_penalty", conservation_law.interior_penalty);
+    sol::optional<T> beta0_user = cons_law_tbl["beta0"];
+    if(beta0_user.has_value())
+      conservation_law.beta0_user = beta0_user.value();
 
   // ==================================
   // = Initialize the solution vector =
   // ==================================
   constexpr int neq =
       std::remove_reference_t<decltype(conservation_law)>::nv_comp;
-  fe_layout_right u_layout{fespace.dg_map, to_size<neq>{}};
+  fe_layout_right u_layout{fespace, to_size<neq>{}, std::true_type{}};
   std::vector<T> u_data(u_layout.size());
   fespan u{u_data.data(), u_layout};
   initialize_solution_lua(config_tbl, fespace, u);
@@ -100,17 +105,20 @@ void initialize_and_solve(
   // = Output the Initial Solution =
   // ===============================
   if constexpr(ndim == 1){
-    io::DatWriter<T, IDX, ndim> dat_writer{fespace};
+    io::DatWriter<T, IDX, ndim, conformity> dat_writer{fespace};
     dat_writer.register_fields(u, conservation_law.field_names);
     dat_writer.collection_name = "initial_condition";
     dat_writer.write_dat(0, 0.0);
   }
   if constexpr (ndim == 2 || ndim == 3) {
-    io::PVDWriter<T, IDX, ndim> pvd_writer{};
-    pvd_writer.register_fespace(fespace);
-    pvd_writer.register_fields(u, conservation_law.field_names);
-    pvd_writer.collection_name = "initial_condition";
-    pvd_writer.write_vtu(0, 0.0);
+#ifdef ICEICLE_USE_VTK
+    io::PVTUWriter<T, IDX, ndim, conformity> vtk_writer{fespace, mpi::comm_world};
+    io::output_field_function<T, DiscType::nv_comp>
+        field_func{conservation_law.output_field_names(), conservation_law.output_field_func()};
+    vtk_writer.register_fields(u, field_func);
+    vtk_writer.rename_collection("initial_condition");
+    vtk_writer.write(0, 0.0);
+#endif
   }
 
   // ==================================
@@ -207,105 +215,57 @@ void setup(sol::table script_config, cli_parser cli_args) {
     sol::table cons_law_tbl = script_config["conservation_law"];
 
     if (eq_icase(cons_law_tbl["name"].get<std::string>(), "burgers")) {
-
-      // get the coefficients for burgers equation
-      BurgersCoefficients<T, ndim> burgers_coeffs{};
-      sol::optional<T> mu_input = cons_law_tbl["mu"];
-      if (mu_input)
-        burgers_coeffs.mu = mu_input.value();
-
-      // WARNING: for some reason in release mode
-      // if we create these tables from cons_law_tbl
-      // the second one won't read properly
-      sol::optional<sol::table> b_adv_input =
-          script_config["conservation_law"]["b_adv"];
-      sol::optional<sol::table> a_adv_input =
-          script_config["conservation_law"]["a_adv"];
-      if (a_adv_input.has_value()) {
-        for (int idim = 0; idim < ndim; ++idim)
-          burgers_coeffs.a[idim] =
-              script_config["conservation_law"]["a_adv"][idim + 1];
-      }
-      if (b_adv_input.has_value()) {
-        for (int idim = 0; idim < ndim; ++idim)
-          burgers_coeffs.b[idim] =
-              script_config["conservation_law"]["b_adv"][idim + 1];
-      }
-
-      std::cout << burgers_coeffs.mu 
-                << " " << burgers_coeffs.a[0] 
-                << " " << burgers_coeffs.b[0] 
-            << std::endl;
-      // create the discretization
-      BurgersFlux physical_flux{burgers_coeffs};
-      BurgersUpwind convective_flux{burgers_coeffs};
-      BurgersDiffusionFlux diffusive_flux{burgers_coeffs};
-      ConservationLawDDG disc{std::move(physical_flux),
-                              std::move(convective_flux),
-                              std::move(diffusive_flux)};
-      disc.field_names = std::vector<std::string>{"u"};
-      disc.residual_names = std::vector<std::string>{"residual"};
-
+      ConservationLawDDG disc{lua::set_up_burgers<T, ndim>(cons_law_tbl)};
+      initialize_and_solve(script_config, fespace, disc);
+    } else if (eq_icase(cons_law_tbl["name"].get<std::string>(),
+                        "spacetime-burgers")) {
+      ConservationLawDDG disc{lua::set_up_st_burgers<T, ndim>(cons_law_tbl)};
       initialize_and_solve(script_config, fespace, disc);
 
     } else if (eq_icase(cons_law_tbl["name"].get<std::string>(),
-                        "spacetime-burgers")) {
-      static constexpr int ndim_space = ndim - 1;
-      // get the coefficients for burgers equation
-      BurgersCoefficients<T, ndim_space> burgers_coeffs{};
-      sol::optional<T> mu_input = cons_law_tbl["mu"];
-      if (mu_input)
-        burgers_coeffs.mu = mu_input.value();
+                            "navier-stokes")) {
 
-      sol::optional<sol::table> b_adv_input =
-          script_config["conservation_law"]["b_adv"];
-      sol::optional<sol::table> a_adv_input =
-          script_config["conservation_law"]["a_adv"];
-      if (a_adv_input.has_value()) {
-        for (int idim = 0; idim < ndim_space; ++idim)
-          burgers_coeffs.a[idim] =
-              script_config["conservation_law"]["a_adv"][idim + 1];
+      // set up the physics
+      auto physics_opt = navier_stokes::lua::get_physics<T, ndim>(cons_law_tbl);
+      if(!physics_opt){
+        AnomalyLog::log_anomaly("Could not set up physics for NS");
+        return;
       }
-      if (b_adv_input.has_value()) {
-        for (int idim = 0; idim < ndim_space; ++idim)
-          burgers_coeffs.b[idim] =
-              script_config["conservation_law"]["b_adv"][idim + 1];
-      }
-      std::cout << burgers_coeffs.b[0] << std::endl;
+      std::visit(
+        tmp::select_fcn{
+            [&](auto&& phys) -> void { 
+                navier_stokes::Physics physics{phys};
 
-      // create the discretization
-      SpacetimeBurgersFlux physical_flux{burgers_coeffs};
-      SpacetimeBurgersUpwind convective_flux{burgers_coeffs};
-      SpacetimeBurgersDiffusion diffusive_flux{burgers_coeffs};
-      ConservationLawDDG disc{std::move(physical_flux),
-                              std::move(convective_flux),
-                              std::move(diffusive_flux)};
-      disc.field_names = std::vector<std::string>{"u"};
-      disc.residual_names = std::vector<std::string>{"residual"};
-      initialize_and_solve(script_config, fespace, disc);
+                // get isothermal wall temperatures
+                sol::optional<sol::table> iso_tmps_opt = cons_law_tbl["isothermal_temperatures"];
+                if(iso_tmps_opt){
+                    sol::table iso_tmps = iso_tmps_opt.value();
+                    for(int i = 0; i < iso_tmps.size(); ++i){
+                        physics.isothermal_temperatures.push_back(iso_tmps[i + 1]);
+                    }
+                }
 
-    } else if (eq_icase_any(cons_law_tbl["name"].get<std::string>(),
-                            "navier-stokes", "euler")) {
-//      using namespace navier_stokes;
-//      using namespace util;
-//
-//      // Set up reference quantities for nondimensionalization
-//      std::optional<std::string> reference_quantities;
-//      if(reference_quantities){
-//        if(eq_icase(reference_quantities.value(),"free_stream")){
-//          
-//        }
-//      }
-//      
-//      Physics<T, ndim> physics{navier_stokes::parse_physics<T, ndim>(cons_law_tbl)};
-//
-//      // get isothermal wall temperatures
-//      sol::optional<sol::table> iso_tmps_opt = cons_law_tbl["isothermal_temperatures"];
-//      if(iso_tmps_opt){
-//        sol::table iso_tmps = iso_tmps_opt.value();
-//        for(int i = 0; i < iso_tmps.size(); ++i){
-//           physics.isothermal_temperatures.push_back(iso_tmps[i + 1]);
-//        }
+                // Create the physical and diffusion fluxes
+                navier_stokes::Flux flux{physics, std::true_type{}};
+                navier_stokes::DiffusionFlux diffusion_flux{physics, std::true_type{}};
+
+                // select the inviscid flux function 
+                std::string flux_name = cons_law_tbl.get_or("flux", std::string{"van_leer"});
+
+                if(util::eq_icase(flux_name, "van_leer")){
+                    navier_stokes::VanLeer numflux{physics};
+                    ConservationLawDDG disc{
+                        std::move(flux), std::move(numflux), std::move(diffusion_flux)};
+                    initialize_and_solve(script_config, fespace, disc);
+                    return;
+                }
+
+                util::AnomalyLog::log_anomaly("Could not construct NS conservation law");
+                return;
+            }
+        }, 
+        physics_opt.value()
+    );
 //      } else {
 //        // check to make sure no isothermal boundary conditions are present
 //        for(auto trace : fespace.get_boundary_traces()){
@@ -317,33 +277,46 @@ void setup(sol::table script_config, cli_parser cli_args) {
 //        }
 //      }
 //
-//      auto fcn = [&]<class fluxtype>(fluxtype physical_flux){
-//      navier_stokes::VanLeer<T, ndim> convective_flux{physics};
-//      navier_stokes::DiffusionFlux<T, ndim> diffusive_flux{physics};
-//      ConservationLawDDG disc{std::move(physical_flux),
-//                              std::move(convective_flux),
-//                              std::move(diffusive_flux)};
-//      disc.field_names = std::vector<std::string>{"rho", "rhou"};
-//      disc.residual_names = std::vector<std::string>{"density_conservation", "momentum_u_conservation"};
-//      if constexpr (ndim >= 2) {
-//        disc.field_names.push_back("rhov");
-//        disc.residual_names.push_back("momentum_v_conservation");
-//      }
-//      if constexpr (ndim >= 3) {
-//        disc.field_names.push_back("rhow");
-//        disc.residual_names.push_back("momentum_w_conservation");
-//      }
-//      disc.field_names.push_back("rhoe");
-//      disc.residual_names.push_back("energy_conservation");
-//      initialize_and_solve(script_config, fespace, disc);
-//      };
-//      if(eq_icase(cons_law_tbl["name"].get<std::string>(), "navier-stokes")){
-//        navier_stokes::Flux<T, ndim, false> physical_flux{physics};
-//        fcn(physical_flux);
-//      } else {
-//        navier_stokes::Flux<T, ndim> physical_flux{physics};
-//        fcn(physical_flux);
-//      }
+    } else if (eq_icase(cons_law_tbl["name"].get<std::string>(),
+                            "euler")) {
+      // set up the physics
+      auto physics_opt = navier_stokes::lua::get_physics<T, ndim>(cons_law_tbl);
+      if(!physics_opt){
+        AnomalyLog::log_anomaly("Could not set up physics for NS");
+        return;
+      }
+      physics_opt.value() >> tmp::select_fcn{
+          [&](auto&& phys) -> void { 
+              navier_stokes::Physics physics{phys};
+
+              // get isothermal wall temperatures
+              sol::optional<sol::table> iso_tmps_opt = cons_law_tbl["isothermal_temperatures"];
+              if(iso_tmps_opt){
+                  sol::table iso_tmps = iso_tmps_opt.value();
+                  for(int i = 0; i < iso_tmps.size(); ++i){
+                      physics.isothermal_temperatures.push_back(iso_tmps[i + 1]);
+                  }
+              }
+
+              // Create the physical and diffusion fluxes
+              navier_stokes::Flux flux{physics, std::false_type{}};
+              navier_stokes::DiffusionFlux diffusion_flux{physics, std::false_type{}};
+
+              // select the inviscid flux function 
+              std::string flux_name = cons_law_tbl.get_or("flux", std::string{"van_leer"});
+
+              if(util::eq_icase(flux_name, "van_leer")){
+                  navier_stokes::VanLeer numflux{physics};
+                  ConservationLawDDG disc{
+                      std::move(flux), std::move(numflux), std::move(diffusion_flux)};
+                      initialize_and_solve(script_config, fespace, disc);
+                      return;
+              }
+
+              util::AnomalyLog::log_anomaly("Could not construct Euler conservation law");
+              return;
+          }
+      };
     } else {
       AnomalyLog::log_anomaly(
           Anomaly{"No such conservation_law implemented",
@@ -357,13 +330,7 @@ void setup(sol::table script_config, cli_parser cli_args) {
 
 int main(int argc, char *argv[]) {
 
-  // Initialize
-#ifdef ICEICLE_USE_PETSC
-  PetscInitialize(&argc, &argv, nullptr, nullptr);
-#elifdef ICEICLE_USE_MPI
-  /* Initialize MPI */
-  MPI_Init(&argc, &argv);
-#endif
+  mpi::init(&argc, &argv);
 
   // ===============================
   // = Command line argument setup =
@@ -417,7 +384,8 @@ int main(int argc, char *argv[]) {
 
   //    // template specialization: ndim
   int ndim_arg = script_config["ndim"];
-  std::cout << "ndim: " << ndim_arg << std::endl;
+  if(mpi::mpi_world_rank() == 0)
+    std::cout << "ndim: " << ndim_arg << std::endl;
   switch (ndim_arg) {
   case 1:
     setup<1>(script_config, cli_args);
@@ -433,13 +401,7 @@ int main(int argc, char *argv[]) {
   //        ndim_arg,
   //        ndim_func);
 
-#ifdef ICEICLE_USE_PETSC
-  // cleanup
-  PetscFinalize();
-#elifdef ICEICLE_USE_MPI
-  // cleanup
-  MPI_Finalize();
-#endif
+  mpi::finalize();
   AnomalyLog::handle_anomalies();
   return 0;
 }

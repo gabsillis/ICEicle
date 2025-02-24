@@ -179,7 +179,7 @@ namespace iceicle {
                 .rho = rho_inf,
                 .u = u_inf,
                 .e = u_inf * u_inf,
-                .p = rho_inf * u_inf * u_inf
+                .p = rho_inf * u_inf * u_inf,
                 .T = 1,
                 .mu = 1
             };
@@ -217,10 +217,10 @@ namespace iceicle {
 
         /// @brief viscosity functions take 1 argument (temperature)
         /// and return a viscosity
-        template<class visc_fcn>
+        template<class visc_fcn, class real>
         concept is_viscosity_fcn = 
-        requires(const visc_fcn visc, typename visc_fcn::real_t T) {
-            {std::invoke(visc, T)} -> std::same_as<typename visc_fcn::real_t>;
+        requires(const visc_fcn visc, real T) {
+            {std::invoke(visc, T)} -> std::same_as<real>;
         };
 
         /// @brief viscosity function that just returns the value given
@@ -608,9 +608,9 @@ namespace iceicle {
                     for(int jdim = 0; jdim < ndim; ++jdim){
                         grad_E[jdim] = grad_temp[jdim] * T_coeff * nondim.Eu / state.gamma;
                         for(int kdim = 0; kdim < ndim; ++kdim){
-                            grad_E += state.velocity[kdim] * grad_vel[kdim][jdim];
+                            grad_E[jdim] += state.velocity[kdim] * grad_vel[kdim][jdim];
                         }
-                        grad_E *= nondim.e_coeff * state.rho;
+                        grad_E[jdim] *= nondim.e_coeff * state.rho;
                     }
                     return FlowStateGradients<real, ndim>{grad_vel, grad_E};
                 } else { // variable_set = VARSET::RHO_U_P
@@ -628,7 +628,7 @@ namespace iceicle {
                     Vector grad_temp;
                     for(int jdim = 0; jdim < ndim; ++jdim){
                         // quotient rule
-                        grad_temp[jdim] = (gradu[ip, jdim] * state.rho - gradu[irho] * state.p)
+                        grad_temp[jdim] = (gradu[ip, jdim] * state.rho - gradu[irho, jdim] * state.p)
                             / SQUARED(state.rho) * gamma / (gamma - 1) / T_coeff;
                     }
 
@@ -637,9 +637,9 @@ namespace iceicle {
                     for(int jdim = 0; jdim < ndim; ++jdim){
                         grad_E[jdim] = grad_temp[jdim] * T_coeff * nondim.Eu / state.gamma;
                         for(int kdim = 0; kdim < ndim; ++kdim){
-                            grad_E += state.velocity[kdim] * grad_vel[kdim][jdim];
+                            grad_E[jdim] += state.velocity[kdim] * grad_vel[kdim][jdim];
                         }
-                        grad_E *= nondim.e_coeff * state.rho;
+                        grad_E[jdim] *= nondim.e_coeff * state.rho;
                     }
                     return FlowStateGradients<real, ndim>{grad_vel, grad_E};
                 }
@@ -686,10 +686,21 @@ namespace iceicle {
             Physics(
                 ReferenceParameters<real> ref, /// @param reference parameters for nondimensionalization
                 EoS eos,          /// @param the equation of state
-                is_viscosity_fcn auto viscosity, /// @param the viscosity function
+                is_viscosity_fcn<real> auto viscosity, /// @param the viscosity function
+                FreeStream<real, ndim> free_stream,
                 real Pr = 0.72       /// @param Prandtl number
-            ) : Pr{Pr}, ref{ref}, viscosity{viscosity},
-                nondim{create_nondim(ref)}, eos{eos}
+            ) : Pr{Pr}, ref{ref}, viscosity{viscosity}, 
+                nondim{create_nondim(ref)}, eos{eos}, free_stream{free_stream}
+            {}
+
+            /// @brief Constructor
+            /// Set up all 
+            Physics(
+                ReferenceParameters<real> ref, /// @param reference parameters for nondimensionalization
+                EoS eos,          /// @param the equation of state
+                is_viscosity_fcn<real> auto viscosity, /// @param the viscosity function
+                real Pr = 0.72       /// @param Prandtl number
+            ) : Physics(ref, eos, viscosity, free_stream, Pr)
             {}
 
             /// @brief calculate the nondimensional shear stress 
@@ -947,7 +958,7 @@ namespace iceicle {
                     real T_coeff = state.cp * physics.ref.T * physics.ref.rho / physics.ref.p;
 
                     // get the shear stress
-                    Tensor tau = physics.calc_shear_stress(state, state_grads);
+                    Tensor<real, ndim, ndim> tau = physics.calc_shear_stress(state, state_grads);
 
                     // get the heat flux 
                     Vector q = physics.calc_heat_flux(state, state_grads);
@@ -1097,14 +1108,16 @@ ns_wall_bc_tag:
                             // outflow
                             uadvB = stateL.velocity;
                             axpy(Ub - normal_uadv_i, unit_normal, uadvB);
+
                             sb = SQUARED(stateL.csound) / 
                                 (gamma * std::pow(stateL.rho, gamma - 1));
                         } else {
                             // inflow
-                            uadvB = stateL.velocity;
-                            axpy(Ub - normal_uadv_i, unit_normal, uadvB);
-                            sb = SQUARED(stateL.csound) / 
-                                (gamma * std::pow(stateL.rho, gamma - 1));
+                            uadvB = state_freestream.velocity;
+                            axpy(Ub - normal_uadv_o, unit_normal, uadvB);
+
+                            sb = SQUARED(state_freestream.csound) / 
+                                (gamma * std::pow(state_freestream.rho, gamma - 1));
                         }
 
                         real rhoR = std::pow(SQUARED(cb) / (gamma * sb), 1.0 / (gamma - 1));
@@ -1189,7 +1202,9 @@ ns_wall_bc_tag:
             }
 
             inline constexpr 
-            auto dt_from_cfl(real cfl, real reference_length) const noexcept -> real {
+            auto dt_from_cfl(real cfl, real reference_length) const noexcept 
+            -> real 
+            {
                 real dt = (reference_length * cfl) / lambda_max;
                 if(full_ns){
                     real scaling = std::max(visc_max / physics.nondim.Re, visc_max * physics.nondim.e_coeff / physics.nondim.Re);
@@ -1201,6 +1216,73 @@ ns_wall_bc_tag:
                 visc_max = 0;
                 return dt;
             }
+
+            /// @brief we output first the conservative variables and then the 
+            /// rest of the thermodynamic state
+            [[nodiscard]] inline constexpr 
+            auto output_field_names() const noexcept
+            -> std::vector< std::string >
+            {
+                std::vector<std::string> field_names{};
+                field_names.emplace_back("rho");
+                field_names.emplace_back("rhou");
+                if constexpr (ndim > 1)
+                    field_names.emplace_back("rhov");
+                if constexpr (ndim > 2)
+                    field_names.emplace_back("rhow");
+                field_names.emplace_back("rhoE");
+                field_names.emplace_back("gamma");
+                field_names.emplace_back("cp");
+                field_names.emplace_back("u");
+                if constexpr (ndim > 1)
+                    field_names.emplace_back("v");
+                if constexpr (ndim > 2)
+                    field_names.emplace_back("w");
+                field_names.emplace_back("T");
+                field_names.emplace_back("velocity magnitude squared");
+                field_names.emplace_back("p");
+                field_names.emplace_back("csound");
+                field_names.emplace_back("e");
+                field_names.emplace_back("E");
+                field_names.emplace_back("H");
+
+                return field_names;
+            }
+
+            /// @brief from the pde state compute the output fields
+            inline constexpr 
+            auto output_field_func(std::span<real, neq> uin, std::span<real> fieldout) const noexcept
+            -> void 
+            {
+
+                std::array<real, neq> uarr;
+                std::ranges::copy(uin, uarr.begin());
+                ThermodynamicState<real, ndim> state = physics.calc_thermo_state(uarr);
+
+                int i = 0;
+                fieldout[i++] = state.rho;
+                fieldout[i++] = state.momentum[0];
+                if constexpr(ndim > 1)
+                    fieldout[i++] = state.momentum[1];
+                if constexpr(ndim > 2)
+                    fieldout[i++] = state.momentum[2];
+                fieldout[i++] = state.rhoE;
+                fieldout[i++] = state.gamma;
+                fieldout[i++] = state.cp;
+                fieldout[i++] = state.velocity[0];
+                if constexpr(ndim > 1)
+                    fieldout[i++] = state.velocity[1];
+                if constexpr(ndim > 2)
+                    fieldout[i++] = state.velocity[2];
+                fieldout[i++] = state.T;
+                fieldout[i++] = state.vv;
+                fieldout[i++] = state.p;
+                fieldout[i++] = state.csound;
+                fieldout[i++] = state.e;
+                fieldout[i++] = state.E;
+                fieldout[i++] = state.H;
+            }
+
         };
         template< class T, int _ndim, is_eos EoS, VARSET varset>
         Flux(Physics<T, _ndim, EoS, varset>) -> Flux<T, _ndim, EoS, varset>;
@@ -1267,7 +1349,7 @@ ns_wall_bc_tag:
                     real T_coeff = state.cp * physics.ref.T * physics.ref.rho / physics.ref.p;
 
                     // get the shear stress
-                    Tensor tau = physics.calc_shear_stress(state, state_grads);
+                    Tensor<real, ndim, ndim> tau = physics.calc_shear_stress(state, state_grads);
 
                     // get the heat flux 
                     Vector q = physics.calc_heat_flux(state, state_grads);
@@ -1275,8 +1357,6 @@ ns_wall_bc_tag:
                     // contribution of viscous fluxes
                     for(int jdim = 0; jdim < ndim; ++jdim){
                         real energy_flux = q[jdim] * unit_normal[jdim];
-                        real mu = physics.viscosity(state.T);
-                        energy_flux = mu * state.gamma / physics.Pr * state_grads.E_gradient[jdim] * unit_normal[jdim];
                         for(int idim = 0; idim < ndim; ++idim){
                             flux[irhou + idim] += tau[idim][jdim] / Re * unit_normal[jdim];
                             energy_flux += state.velocity[idim] * tau[idim][jdim] * unit_normal[jdim];
@@ -1297,6 +1377,103 @@ ns_wall_bc_tag:
                 std::array<real, nv_comp> flux{};
                 std::ranges::fill(flux, 0.0);
                 return flux;
+            }
+
+            /// @brief compute the homogeneity tensor 
+            /// TODO: only conservative variables rn
+            [[nodiscard]] inline constexpr 
+            auto homogeneity_tensor(
+                std::array<real, nv_comp> u
+            ) const noexcept -> Tensor<real, nv_comp, ndim, nv_comp, ndim>
+            {
+                ThermodynamicState<real, ndim> state = physics.calc_thermo_state(u);
+                real mu = physics.viscosity(state.T);
+                Tensor<real, nv_comp, ndim, nv_comp, ndim> G;
+                G = 0;
+
+                if constexpr (varset == VARSET::CONSERVATIVE) {
+                    // Compute the shear stress homogeneity tensor 
+                    Tensor<real, ndim, ndim, nv_comp, ndim> tau_tensor;
+                    tau_tensor = 0;
+                    for(int i = 0; i < ndim; ++i){
+                        // density terms
+                        for(int j = 0; j < ndim; ++j){
+                            int r = 0;
+                            int s = j;
+                            tau_tensor[i, j, r, s] -= state.velocity[i] * mu / state.rho;
+
+                            s = i;
+                            tau_tensor[i, j, r, s] -= state.velocity[j] * mu / state.rho;
+                        }
+                        int j = i;
+                        int r = 0;
+                        for(int s = 0; s < ndim; ++s){
+                            tau_tensor[i, j, r, s] += 2.0 / 3.0 * state.velocity[s] * mu / state.rho;
+                        }
+
+                        // velocity terms
+                        for(int j = 0; j < ndim; ++j){
+                            int r = irhou + i;
+                            int s = j;
+                            tau_tensor[i, j, r, s] += mu / state.rho;
+
+                            r = irhou + j;
+                            s = i; 
+                            tau_tensor[i, j, r, s] += mu / state.rho;
+                        }
+                        j = i;
+                        for(int s = 0; s < ndim; ++s) {
+                            int r = irhou + s;
+                            tau_tensor[i, j, r, s] -= 2.0 / 3.0 * mu / state.rho;
+                        }
+                    }
+
+                    // momentum terms of homogeneity
+                    for(int iadv = 0; iadv < ndim; ++iadv){
+                        for(int jadv = 0; jadv < ndim; ++jadv){
+                            G[irhou + iadv, jadv] += tau_tensor[iadv, jadv] / physics.nondim.Re;
+                        }
+                    }
+
+                    // energy terms of homogeneity
+                    for(int iadv = 0; iadv < ndim; ++iadv){
+                        for(int k = 0; k < ndim; ++k){
+                            for(int r = 0; r < nv_comp; ++r){
+                                for(int s = 0; s < ndim; ++s){
+                                    G[irhoe, k, r, s] += state.velocity[iadv] * tau_tensor[iadv, k, r, s]
+                                        * physics.nondim.e_coeff / physics.nondim.Re;
+                                }
+                            }
+                        }
+                    }
+
+                    // NOTE: leave out energy coefficient b/c it cancels for part
+                    real heat_flux_multiplier = mu * state.gamma / physics.Pr
+                        * physics.nondim.Re;
+                    for(int k = 0; k < ndim; ++k){
+                        // density derivative part of dE/dx chain rule
+                        int r = irho;
+                        int s = k;
+                        G[irhoe, k, r, s] -= state.E / state.rho * heat_flux_multiplier;
+
+                        // u_k du_k / dx_k
+                        for(int iadv = 0; iadv < ndim; ++iadv){
+                            r = irhou + iadv;
+                            s = k;
+                            G[irhoe, k, r, s] -= state.velocity[iadv] * physics.nondim.e_coeff
+                                * heat_flux_multiplier / state.rho;
+                            G[irhoe, k, 0, s] += state.velocity[iadv] * state.velocity[iadv] 
+                                * physics.nondim.e_coeff * heat_flux_multiplier / state.rho;
+                        }
+
+                        // energy derivative part of dE/dx chain rule
+                        r = irhoe;
+                        G[irhoe, k, r, s] += heat_flux_multiplier / state.rho;
+                    }
+                } else {
+                    util::AnomalyLog::log_anomaly("not yet implemented");
+                }
+                return G;
             }
         };
 

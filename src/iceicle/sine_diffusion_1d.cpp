@@ -6,6 +6,7 @@
 #include "iceicle/disc/conservation_law.hpp"
 #include "iceicle/element/reference_element.hpp"
 #include "iceicle/explicit_utils.hpp"
+#include "iceicle/fe_definitions.hpp"
 #include "iceicle/fespace/fespace.hpp"
 #include "iceicle/geometry/face.hpp"
 #include "iceicle/disc/projection.hpp"
@@ -50,8 +51,8 @@ int main(int argc, char *argv[]){
         cli_option{"ivis", "the number of timesteps between outputs", parse_type<IDX>{}},
         cli_option{"dt", "the timestep", parse_type<T>{}}, 
         cli_option{"ddgic_mult", "multiplier for ddgic", parse_type<T>{}}, 
-        cli_option{"fo", "fourier number", parse_type<T>{}}
-//        cli_flag{"interior_penalty", "enable interior penalty instead of ddg"}
+        cli_option{"fo", "fourier number", parse_type<T>{}},
+        cli_flag{"interior_penalty", "enable interior penalty instead of ddg"}
     );
     if(cli_args["help"]){
         cli_args.print_options(std::cout);
@@ -85,9 +86,9 @@ int main(int argc, char *argv[]){
             [](const T *x, T *out){
                 out[0] = 0.0;
         });
-        // disc.interior_penalty = cli_args["interior_penalty"];
+        disc.interior_penalty = cli_args["interior_penalty"];
 
-        fe_layout_right u_layout{fespace.dg_map, std::integral_constant<std::size_t, neq>{}};
+        fe_layout_right u_layout{fespace, std::integral_constant<std::size_t, neq>{}, std::true_type{}};
         std::vector<T> u_data(u_layout.size());
         fespan u{u_data.data(), u_layout};
 
@@ -101,8 +102,8 @@ int main(int argc, char *argv[]){
 
         Projection<T, IDX, ndim, neq> projection{ic};
         // TODO: extract into LinearFormSolver
-        std::vector<T> u_local_data(fespace.dg_map.max_el_size_reqirement(neq));
-        std::vector<T> res_local_data(fespace.dg_map.max_el_size_reqirement(neq));
+        std::vector<T> u_local_data(fespace.dofs.max_el_size_reqirement(neq));
+        std::vector<T> res_local_data(fespace.dofs.max_el_size_reqirement(neq));
         std::for_each(fespace.elements.begin(), fespace.elements.end(), 
             [&](const FiniteElement<T, IDX, ndim> &el){
                 // form the element local views
@@ -136,7 +137,7 @@ int main(int argc, char *argv[]){
 
         RK3TVD solver{fespace, disc, dt, stop_condition};
         solver.ivis = (cli_args["ivis"].has_value()) ? cli_args["ivis"].as<IDX>() : 100;
-        io::DatWriter<T, IDX, ndim> writer{fespace};
+        io::DatWriter<T, IDX, ndim, l2_conformity(ndim)> writer{fespace};
         writer.register_fields(u, "u");
         solver.vis_callback = [&](decltype(solver) &solver){
             T sum = 0.0;

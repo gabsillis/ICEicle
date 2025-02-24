@@ -7,6 +7,7 @@
 #include "iceicle/fespace/fespace.hpp"
 #include "iceicle/form_petsc_jacobian.hpp"
 #include "iceicle/form_residual.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/nonlinear_solver_utils.hpp"
 #include "iceicle/petsc_interface.hpp"
 #include "iceicle/mdg_utils.hpp"
@@ -31,10 +32,12 @@ namespace iceicle::solvers {
      * @tparam T the floating point type 
      * @tparam IDX the index type
      * @tparam ndim the number of dimensions
+     * @param conformity the conformity class of the degrees of freedom
      * @tparam disc_class the discretization
      * @tparam ls_type the linesearch type to use
      */
-    template<class T, class IDX, int ndim, class disc_class, class ls_type = no_linesearch<T, IDX>>
+    template<class T, class IDX, int ndim, int conformity,
+        class disc_class, class ls_type = no_linesearch<T, IDX>>
     class PetscNewton {
 
         // ================
@@ -73,6 +76,9 @@ namespace iceicle::solvers {
         /// @brief the linesearch strategy
         const ls_type& linesearch;
 
+        /// @brief the mpi communicator
+        mpi::communicator_type comm;
+
         /// @brief the convergence Criteria
         /// determines whether the solver should terminate
         ConvergenceCriteria<T, IDX> conv_criteria;
@@ -97,19 +103,18 @@ namespace iceicle::solvers {
         /// very minimal by default other options are defined in this header
         /// or a custom function can be made 
         ///
-        /// Passes a reference to this, the current iteration number, the residual vector, and the du vector
-        std::function<void(IDX, Vec, Vec)> diag_callback = []
+        /// the current iteration number, the residual vector, and the du vector
+        std::function<void(IDX, Vec, Vec)> diag_callback = [&]
             (IDX k, Vec res_data, Vec du_data)
         {
-            int iproc;
-            MPI_Comm_rank(PETSC_COMM_WORLD, &iproc);
+            int iproc = mpi::rank(comm);
             if(iproc == 0){
                 std::cout << "Diagnostics for iteration: " << k << std::endl;
             }
             if(iproc == 0) std::cout << "Residual: " << std::endl;
-            PetscCallAbort(PETSC_COMM_WORLD, VecView(res_data, PETSC_VIEWER_STDOUT_WORLD));
+            PetscCallAbort(comm, VecView(res_data, PETSC_VIEWER_STDOUT_WORLD));
             if(iproc == 0) std::cout << std::endl << "du: " << std::endl;
-            PetscCallAbort(PETSC_COMM_WORLD, VecView(du_data, PETSC_VIEWER_STDOUT_WORLD));
+            PetscCallAbort(comm, VecView(du_data, PETSC_VIEWER_STDOUT_WORLD));
             if(iproc == 0) std::cout << "------------------------------------------" << std::endl << std::endl; 
         };
 
@@ -122,11 +127,11 @@ namespace iceicle::solvers {
         /// is given a reference to this when called 
         /// default is to print out a l2 norm of the residual data array
         /// Passes a reference to this, the current iteration number, the residual vector, and the du vector
-        std::function<void(IDX, Vec, Vec)> vis_callback = []
+        std::function<void(IDX, Vec, Vec)> vis_callback = [&]
             (IDX k, Vec res_data, Vec du_data)
         {
             T res_norm;
-            PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &res_norm));
+            PetscCallAbort(comm, VecNorm(res_data, NORM_2, &res_norm));
             std::cout << std::setprecision(8);
             std::cout << "itime: " << std::setw(6) << k
                 << " | residual l2: " << std::setw(14) << res_norm
@@ -144,49 +149,53 @@ namespace iceicle::solvers {
          * @param fespace the finite element space
          * @param disc the discretization
          * @param conv_criteria the convergence criteria for terminating the solve 
+         * @param comm the parallel communicator
          */
         PetscNewton(
-            FESpace<T, IDX, ndim> &fespace,
+            FESpace<T, IDX, ndim, conformity> &fespace,
             disc_class &disc,
             const ConvergenceCriteria<T, IDX> &conv_criteria,
-            const ls_type& linesearch
+            const ls_type& linesearch,
+            mpi::communicator_type comm
         ) : fespace(fespace), disc(disc), linesearch{linesearch}, 
-            conv_criteria{conv_criteria} 
+            conv_criteria{conv_criteria}, comm{comm}
         {
-            PetscInt local_res_size = fespace.dg_map.calculate_size_requirement(disc_class::dnv_comp);
-            PetscInt local_u_size = local_res_size;
+            PetscInt local_u_size = fespace.owned_ndof(comm) * disc_class::nv_comp;
+            PetscInt local_res_size = local_u_size;
+
             // Create and set up the matrix if not given 
-            MatCreate(PETSC_COMM_WORLD, &(this->jac));
+            MatCreate(comm, &(this->jac));
             MatSetSizes(this->jac, local_res_size, local_u_size, PETSC_DETERMINE, PETSC_DETERMINE);
             MatSetFromOptions(this->jac);
             MatSetUp(this->jac);
 
             // Create and set up the vectors
-            VecCreate(PETSC_COMM_WORLD, &res_data);
+            VecCreate(comm, &res_data);
             VecSetSizes(res_data, local_res_size, PETSC_DETERMINE);
             VecSetFromOptions(res_data);
             
 
-            VecCreate(PETSC_COMM_WORLD, &du_data);
+            VecCreate(comm, &du_data);
             VecSetSizes(du_data, local_u_size, PETSC_DETERMINE);
             VecSetFromOptions(du_data);
 
             // Create the linear solver and preconditioner
-            PetscCallAbort(PETSC_COMM_WORLD, KSPCreate(PETSC_COMM_WORLD, &ksp));
+            PetscCallAbort(comm, KSPCreate(comm, &ksp));
 
             // default to sor preconditioner
-            PetscCallAbort(PETSC_COMM_WORLD, KSPGetPC(ksp, &pc));
+            PetscCallAbort(comm, KSPGetPC(ksp, &pc));
             PCSetType(pc, PCSOR);
 
             // Get user input (can override defaults set above)
-            PetscCallAbort(PETSC_COMM_WORLD, KSPSetFromOptions(ksp));
+            PetscCallAbort(comm, KSPSetFromOptions(ksp));
         }
 
         PetscNewton(
-            FESpace<T, IDX, ndim> &fespace,
+            FESpace<T, IDX, ndim, conformity> &fespace,
             disc_class &disc,
-            const ConvergenceCriteria<T, IDX> &conv_criteria
-        ) : PetscNewton(fespace, disc, conv_criteria, no_linesearch<T, IDX>{}) {}
+            const ConvergenceCriteria<T, IDX> &conv_criteria,
+            mpi::communicator_type comm
+        ) : PetscNewton(fespace, disc, conv_criteria, no_linesearch<T, IDX>{}, comm) {}
 
         // ====================
         // = Member Functions =
@@ -211,14 +220,14 @@ namespace iceicle::solvers {
             // get the initial residual and jacobian
             {
                 petsc::VecSpan res_view{res_data};
-                fespan res{res_view.data(), u.get_layout()};
-                form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+                fespan res{res_view.data(), exclude_ghost(u.get_layout())};
+                form_petsc_jacobian_fd(fespace, disc, u, res, jac, comm);
 //                std::cout << "res_initial" << std::endl;
 //                std::cout << res;
             } // end scope of res_view
 
             // set the initial residual norm
-            PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &(conv_criteria.r0)));
+            PetscCallAbort(comm, VecNorm(res_data, NORM_2, &(conv_criteria.r0)));
 
             IDX k;
             for(k = 0; k < conv_criteria.kmax; ++k){
@@ -233,27 +242,28 @@ namespace iceicle::solvers {
                 // view jacobian matrix
                 if(verbosity >= 4){
                     PetscViewer jacobian_viewer;
-                    PetscViewerASCIIOpen(PETSC_COMM_WORLD, ("iceicle_data/jacobian_view" + std::to_string(k) + ".dat").c_str(), &jacobian_viewer);
+                    PetscViewerASCIIOpen(comm, ("iceicle_data/jacobian_view" + std::to_string(k) + ".dat").c_str(),
+                            &jacobian_viewer);
                     PetscViewerPushFormat(jacobian_viewer, PETSC_VIEWER_ASCII_DENSE);
                     MatView(jac, jacobian_viewer);
                     PetscViewerDestroy(&jacobian_viewer);
     //                MatView(jac, PETSC_VIEWER_STDOUT_WORLD); // for debug purposes
                 }
 
-                PetscCallAbort(PETSC_COMM_WORLD, KSPSetOperators(ksp, this->jac, this->jac));
-                PetscCallAbort(PETSC_COMM_WORLD, KSPSolve(ksp, res_data, du_data));
+                PetscCallAbort(comm, KSPSetOperators(ksp, this->jac, this->jac));
+                PetscCallAbort(comm, KSPSolve(ksp, res_data, du_data));
 
                 // update u
                 if constexpr (std::is_same_v<ls_type, no_linesearch<T, IDX>>){
                     petsc::VecSpan du_view{du_data};
-                    fespan du{du_view.data(), u.get_layout()};
+                    fespan du{du_view.data(), exclude_ghost(u.get_layout())};
                     axpy(-1.0, du, u);
                 } else {
                     // its linesearchin time!
 
                     // view into the calculated newton step for u and x
                     petsc::VecSpan du_view{du_data};
-                    fespan du{du_view.data(), u.get_layout()};
+                    fespan du{du_view.data(), exclude_ghost(u.get_layout())};
 
                     // u step for linesearch
                     std::vector<T> u_step_storage(u.size());
@@ -262,7 +272,7 @@ namespace iceicle::solvers {
 
                     // working array for linesearch residuals
                     std::vector<T> r_work_storage(u.size());
-                    fespan res_work{r_work_storage.data(), u.get_layout()};
+                    fespan res_work{r_work_storage.data(), exclude_ghost(u.get_layout())};
 
                     std::vector<T> r_mdg_work_storage{};
 
@@ -274,7 +284,7 @@ namespace iceicle::solvers {
                         copy_fespan(u, u_step);
                         axpy(-alpha_arg, du, u_step);
 
-                        form_residual(fespace, disc, u_step, res_work);
+                        form_residual(fespace, disc, u_step, res_work, comm);
                         T rnorm = res_work.vector_norm();
 
                         // verbose output
@@ -302,14 +312,14 @@ namespace iceicle::solvers {
                 // Get the new residual and Jacobian (for the next step)
                 {
                     petsc::VecSpan res_view{res_data};
-                    fespan res{res_view.data(), u.get_layout()};
+                    fespan res{res_view.data(), exclude_ghost(u.get_layout())};
                     MatZeroEntries(jac); // zero out the jacobian
-                    form_petsc_jacobian_fd(fespace, disc, u, res, jac);
+                    form_petsc_jacobian_fd(fespace, disc, u, res, jac, comm);
                 } // end scope of res_view
 
                 // get the residual norm
                 T rk;
-                PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &rk));
+                PetscCallAbort(comm, VecNorm(res_data, NORM_2, &rk));
                 
                 // Diagnostics 
                 if(idiag > 0 && k % idiag == 0) {
@@ -337,29 +347,16 @@ namespace iceicle::solvers {
     };
 
     /// Deduction guides
-    template<class T, class IDX, int ndim, class disc_class, class ls_type>
-    PetscNewton(FESpace<T, IDX, ndim> &, disc_class &,
-        const ConvergenceCriteria<T, IDX> &, const ls_type&) -> PetscNewton<T, IDX, ndim, disc_class, ls_type>;
+    template<class T, class IDX, int ndim, int conformity,
+        class disc_class, class ls_type>
+    PetscNewton(FESpace<T, IDX, ndim, conformity> &, disc_class &,
+        const ConvergenceCriteria<T, IDX> &, const ls_type&,
+        mpi::communicator_type comm) 
+    -> PetscNewton<T, IDX, ndim, conformity, disc_class, ls_type>;
 
-    template<class T, class IDX, int ndim, class disc_class, class ls_type>
-    PetscNewton(FESpace<T, IDX, ndim> &, disc_class &,
-        const ConvergenceCriteria<T, IDX> &, const ls_type&, Mat) -> PetscNewton<T, IDX, ndim, disc_class, ls_type>;
-
-    template<class T, class IDX, int ndim, class disc_class, class ls_type>
-    PetscNewton(FESpace<T, IDX, ndim> &, disc_class &,
-        const ConvergenceCriteria<T, IDX> &, const ls_type&, Mat, MPI_Comm) -> PetscNewton<T, IDX, ndim, disc_class, ls_type>;
-
-    /// Deduction guides
-    template<class T, class IDX, int ndim, class disc_class>
-    PetscNewton(FESpace<T, IDX, ndim> &, disc_class &,
-        const ConvergenceCriteria<T, IDX> &) -> PetscNewton<T, IDX, ndim, disc_class, no_linesearch<T, IDX>>;
-
-    template<class T, class IDX, int ndim, class disc_class>
-    PetscNewton(FESpace<T, IDX, ndim> &, disc_class &,
-        const ConvergenceCriteria<T, IDX> &, Mat) -> PetscNewton<T, IDX, ndim, disc_class, no_linesearch<T, IDX>>;
-
-    template<class T, class IDX, int ndim, class disc_class>
-    PetscNewton(FESpace<T, IDX, ndim> &, disc_class &,
-        const ConvergenceCriteria<T, IDX> &, Mat, MPI_Comm) -> PetscNewton<T, IDX, ndim, disc_class, no_linesearch<T, IDX>>;
-
+    template<class T, class IDX, int ndim, int conformity, 
+        class disc_class>
+    PetscNewton(FESpace<T, IDX, ndim, conformity> &, disc_class &,
+        const ConvergenceCriteria<T, IDX> &, mpi::communicator_type comm) 
+    -> PetscNewton<T, IDX, ndim, conformity, disc_class, no_linesearch<T, IDX>>;
 }

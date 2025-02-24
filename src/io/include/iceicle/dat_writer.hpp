@@ -10,11 +10,11 @@
 #include <string>
 namespace iceicle::io {
 
-    template<class T, class IDX, int ndim>
+    template<class T, class IDX, int ndim, int conformity>
     class DatWriter{
 
         struct writeable_field {
-            virtual void write_data(std::ofstream &out, FESpace<T, IDX, ndim> &fespace) const = 0;
+            virtual void write_data(std::ofstream &out, FESpace<T, IDX, ndim, conformity> &fespace) const = 0;
 
             virtual auto clone() const -> std::unique_ptr<writeable_field> = 0;
 
@@ -35,7 +35,7 @@ namespace iceicle::io {
             : fedata(fedata), field_names({std::forward<VecArgs>(vec_args)...}){}
 
             /// @brief adds the xml DataArray tags and data to a given vtu file 
-            void write_data(std::ofstream &out, FESpace<T, IDX, ndim> &fespace) const override
+            void write_data(std::ofstream &out, FESpace<T, IDX, ndim, conformity> &fespace) const override
             {
                 using Element = FiniteElement<T, IDX, ndim>;
                 constexpr int field_width = 18;
@@ -98,7 +98,7 @@ namespace iceicle::io {
             : fedata(fedata), field_names({std::forward<VecArgs>(vec_args)...}){}
 
             /// @brief adds the xml DataArray tags and data to a given vtu file 
-            void write_data(std::ofstream &out, FESpace<T, IDX, ndim> &fespace) const override
+            void write_data(std::ofstream &out, FESpace<T, IDX, ndim, conformity> &fespace) const override
             {
                 using Element = FiniteElement<T, IDX, ndim>;
                 constexpr int field_width = 18;
@@ -148,7 +148,7 @@ namespace iceicle::io {
 
         private:
         AbstractMesh<T, IDX, ndim> *meshptr;
-        FESpace<T, IDX, ndim> *fespace_ptr;
+        FESpace<T, IDX, ndim, conformity> *fespace_ptr;
         std::vector<std::unique_ptr<writeable_field>> fields;
 
         public:
@@ -157,12 +157,12 @@ namespace iceicle::io {
         std::string collection_name = "iceicle_data";
         std::filesystem::path data_directory;
 
-        DatWriter(FESpace<T, IDX, ndim> &fespace)
+        DatWriter(FESpace<T, IDX, ndim, conformity> &fespace)
         : fespace_ptr{&fespace}, meshptr{fespace.meshptr}, data_directory{std::filesystem::current_path()}{
             data_directory /= "iceicle_data";
         }
 
-        DatWriter(const DatWriter<T, IDX, ndim>& other) 
+        DatWriter(const DatWriter<T, IDX, ndim, conformity>& other) 
             : meshptr(other.meshptr), fespace_ptr(other.fespace_ptr), fields{}, 
               collection_name(other.collection_name), data_directory(other.data_directory) 
         {
@@ -171,11 +171,11 @@ namespace iceicle::io {
             }
         }
 
-        DatWriter(DatWriter<T, IDX, ndim>&& other) = default;
+        DatWriter(DatWriter<T, IDX, ndim, conformity>&& other) = default;
 
         /// @brief register an fespace to this writer 
         /// will overwrite the registered mesh to the one in the fespace
-        void register_fespace(FESpace<T, IDX, ndim> &fespace){
+        void register_fespace(FESpace<T, IDX, ndim, conformity> &fespace){
             fespace_ptr = &fespace;
             meshptr = fespace.meshptr;
         }
@@ -241,19 +241,33 @@ namespace iceicle::io {
                 field_path /= 
                         collection_name + "_"
                         + (name + std::to_string(i / 2)
-                        + "_rank" + std::to_string(mpi::mpi_world_rank())
                         + "_i" + std::to_string(itime)
                         + ".dat");
 
-                std::ofstream out{field_path};
-                if(!out) {
-                    throw std::logic_error("could not open mesh file for writing.");
-                }
+                // clear out the file
+                mpi::execute_on_rank(0, [field_path]{
+                    std::ofstream out{field_path, std::ios::trunc};
+                    out.close();
+                });
 
-                if(!meshptr){
-                    throw std::logic_error("mesh doesn't exist");
+                mpi::mpi_sync();
+
+                for(int irank = 0; irank < mpi::mpi_world_size(); ++irank){
+
+                    if(irank == mpi::mpi_world_rank()){
+                        // open to append to file
+                        std::ofstream out{field_path, std::ios::app};
+                        if(!out) {
+                            throw std::logic_error("could not open mesh file for writing.");
+                        }
+
+                        if(!meshptr){
+                            throw std::logic_error("mesh doesn't exist");
+                        }
+                        field.write_data(out, *fespace_ptr);
+                    }
+                    mpi::mpi_sync();
                 }
-                field.write_data(out, *fespace_ptr);
             }
         }
     };

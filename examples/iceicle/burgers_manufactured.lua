@@ -91,5 +91,14 @@ return {
     -- output
     output = {
         writer = "dat"
+    },
+
+    -- post-processing
+    post = {
+        exact_solution = function(x)
+            return math.sin(2 * math.pi * x)
+        end,
+
+        tasks = { "l2_error" },
     }
 }

@@ -9,6 +9,7 @@
 #include "iceicle/fe_function/component_span.hpp"
 #include "iceicle/form_residual.hpp"
 #include "iceicle/geometry/face.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/petsc_interface.hpp"
 #include "iceicle/fd_utils.hpp"
 #include <cmath>
@@ -31,6 +32,7 @@ namespace iceicle::solvers {
      * @tparam T the floaating point type
      * @tparam IDX the index type 
      * @tparam ndim the number of dimensions 
+     * @tparam conformity the dof conformity for the finite element space
      * @tparam  disc_class the discretization type 
      *
      * @param fespace the finite element space 
@@ -47,20 +49,24 @@ namespace iceicle::solvers {
         class T,
         class IDX,
         int ndim,
+        int conformity,
         class disc_class,
         class uLayoutPolicy,
         class uAccessorPolicy,
         class resLayoutPolicy
     >
     void form_petsc_jacobian_fd(
-        FESpace<T, IDX, ndim> &fespace,
+        FESpace<T, IDX, ndim, conformity> &fespace,
         disc_class &disc,
         fespan<T, uLayoutPolicy, uAccessorPolicy> u,
         fespan<T, resLayoutPolicy> res,
         Mat jac,
-        T epsilon = std::sqrt(std::numeric_limits<T>::epsilon()),
-        MPI_Comm comm = MPI_COMM_WORLD 
-    ) {
+        mpi::communicator_type comm,
+        T epsilon = std::sqrt(std::numeric_limits<T>::epsilon())
+    ) requires(
+        specifies_ncomp<disc_class>
+        && !decltype(res)::includes_ghost_elements()) 
+    {
 
         using Element = FiniteElement<T, IDX, ndim>;
         using Trace = TraceSpace<T, IDX, ndim>;
@@ -70,9 +76,12 @@ namespace iceicle::solvers {
         // zero out the residual
         res = 0;
 
+        // synchronize the ghost and non-owned data
+        u.sync_mpi(comm);
+
         // preallocate storage for compact views of u and res 
         const std::size_t max_local_size =
-            fespace.dg_map.max_el_size_reqirement(disc_class::dnv_comp);
+            fespace.dofs.max_el_size_reqirement(disc_class::dnv_comp);
         const std::size_t ncomp = disc_class::dnv_comp;
 
         // get the start indices for the petsc matrix on this processor
@@ -95,66 +104,187 @@ namespace iceicle::solvers {
 
         // boundary faces 
         for(const Trace &trace : fespace.get_boundary_traces()) {
-            // compact data views 
-            dofspan uL{uL_data.data(), u.create_element_layout(trace.elL.elidx)};
-            dofspan uR{uR_data.data(), u.create_element_layout(trace.elR.elidx)};
 
-            // compact residual views
-            dofspan resL{resL_data.data(), res.create_element_layout(trace.elL.elidx)};
-            dofspan resLp{resLp_data.data(), res.create_element_layout(trace.elL.elidx)};
+            if(trace.face->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM){
+               auto [jrank, imleft] = decode_mpi_bcflag(trace.face->bcflag);
+                // compact data views 
+                dofspan uL{uL_data.data(), u.create_element_layout(trace.elL.elidx)};
+                dofspan uR{uR_data.data(), u.create_element_layout(trace.elR.elidx)};
 
-            // compact jacobian views 
-            mdspan jacL{jacL_data.data(), extents{resL.size(), uL.size()}};
-            std::fill_n(jacL_data.begin(), jacL.size(), 0);
+                // compact residual views
+                dofspan resL{resL_data.data(), res.create_element_layout(trace.elL.elidx)};
+                dofspan resLp{resLp_data.data(), res.create_element_layout(trace.elL.elidx)};
+                dofspan resR{resR_data.data(), res.create_element_layout(trace.elR.elidx)};
+                dofspan resRp{resRp_data.data(), res.create_element_layout(trace.elR.elidx)};
 
-            // extract the compact values from the global u view 
-            extract_elspan(trace.elL.elidx, u, uL);
-            extract_elspan(trace.elR.elidx, u, uR);
+                // compact jacobian views 
+                mdspan jacL{jacL_data.data(), extents{(imleft) ? resL.size() : resR.size(),
+                    uL.size()}};
+                mdspan jacR{jacR_data.data(), extents{(imleft) ? resL.size() : resR.size(),
+                    uR.size()}};
+                std::fill_n(jacL_data.begin(), jacL.size(), 0);
+                std::fill_n(jacR_data.begin(), jacR.size(), 0);
 
-            // zero out the residuals 
-            resL = 0;
+                // extract the compact values from the global u view 
+                extract_elspan(trace.elL.elidx, u, uL);
+                extract_elspan(trace.elR.elidx, u, uR);
 
-            // get the unperturbed residual and send to full residual
-            disc.boundaryIntegral(trace, fespace.meshptr->coord, uL, uR, resL);
-            scatter_elspan(trace.elL.elidx, 1.0, resL, 1.0, res);
+                // zero out the residuals 
+                resL = 0;
+                resR = 0;
 
-            // set up the perturbation amount scaled by unperturbed residual 
-            T eps_scaled = scale_fd_epsilon(epsilon, resL.vector_norm());
+               disc.trace_integral(trace, fespace.meshptr->coord, uL, uR, resL, resR);
+                   if(imleft){
+                       // scatter only the left
+                       scatter_elspan(trace.elL.elidx, 1.0, resL, 1.0, res);
+                   } else {
+                       // scatter only the right
+                       scatter_elspan(trace.elR.elidx, 1.0, resR, 1.0, res);
+                   }
 
-            std::size_t glob_index_L = u.get_layout()[trace.elL.elidx, 0, 0];
+                // set up the perturbation amount scaled by unperturbed residual 
+                T eps_scaled = scale_fd_epsilon(epsilon, resL.vector_norm());
 
-            // perturb and form jacobian 
-            for(IDX idofu = 0; idofu < trace.elL.nbasis(); ++idofu){
-                for(IDX iequ = 0; iequ < ncomp; ++iequ){
-                    // get the compact column index for this dof and component 
-                    IDX jcol = uL.get_layout()[idofu, iequ];
+                std::size_t glob_index_L = u.get_pindex(trace.elL.elidx, 0, 0);
+                std::size_t glob_index_R = u.get_pindex(trace.elR.elidx, 0, 0);
 
-                    // perturb
-                    T old_val = uL[idofu, iequ];
-                    uL[idofu, iequ] += eps_scaled;
+                // perturb and form jacobian 
+                int ndofu = trace.elL.nbasis();
+                for(IDX idofu = 0; idofu < ndofu; ++idofu){
+                    for(IDX iequ = 0; iequ < ncomp; ++iequ){
+                        // get the compact column index for this dof and component 
+                        IDX jcol = uL.get_layout()[idofu, iequ];
 
-                    // zero out the residual 
-                    resLp = 0;
+                        // perturb
+                        T old_val = uL[idofu, iequ];
+                        uL[idofu, iequ] += eps_scaled;
 
-                    // get the perturbed residual
-                    disc.boundaryIntegral(trace, fespace.meshptr->coord, uL, uR, resLp);
+                        // zero out the residual 
+                        resLp = 0;
+                        resRp = 0;
 
-                    // fill jacobian for this perturbation
-                    for(IDX idoff = 0; idoff < trace.elL.nbasis(); ++idoff) {
-                        for(IDX ieqf = 0; ieqf < ncomp; ++ieqf){
-                            IDX irow = uL.get_layout()[idoff, ieqf];
-                            jacL[irow, jcol] += (resLp[idoff, ieqf] - resL[idoff, ieqf]) / eps_scaled;
+                        // get the perturbed residual
+                        disc.trace_integral(trace, fespace.meshptr->coord, uL, uR, resLp, resRp);
+
+                        const auto& res = (imleft) ? resL : resR;
+                        const auto& resp = (imleft) ? resLp : resRp;
+                        // fill jacobian for this perturbation
+                        int ndoff = (imleft) ? trace.elL.nbasis() : trace.elR.nbasis();
+                        for(IDX idoff = 0; idoff < ndoff; ++idoff) {
+                            for(IDX ieqf = 0; ieqf < ncomp; ++ieqf){
+                                IDX irow = (imleft) ? uL.get_layout()[idoff, ieqf]
+                                                    : uR.get_layout()[idoff, ieqf];
+                                jacL[irow, jcol] += (resp[idoff, ieqf] - res[idoff, ieqf]) / eps_scaled;
+                            }
                         }
+
+                        // undo the perturbation
+                        uL[idofu, iequ] = old_val;
                     }
-
-                    // undo the perturbation
-                    uL[idofu, iequ] = old_val;
                 }
-            }
+                ndofu = trace.elR.nbasis();
+                for(IDX idofu = 0; idofu < ndofu; ++idofu){
+                    for(IDX iequ = 0; iequ < ncomp; ++iequ){
+                        // get the compact column index for this dof and component 
+                        IDX jcol = uR.get_layout()[idofu, iequ];
 
-            // TODO: change to a scatter generalized operation to support CG structures
-            petsc::add_to_petsc_mat(jac, proc_range_beg + glob_index_L, 
-                    proc_range_beg + glob_index_L, jacL);
+                        // perturb
+                        T old_val = uR[idofu, iequ];
+                        uR[idofu, iequ] += eps_scaled;
+
+                        // zero out the residual 
+                        resLp = 0;
+                        resRp = 0;
+
+                        // get the perturbed residual
+                        disc.trace_integral(trace, fespace.meshptr->coord, uL, uR, resLp, resRp);
+
+                        const auto& res = (imleft) ? resL : resR;
+                        const auto& resp = (imleft) ? resLp : resRp;
+                        // fill jacobian for this perturbation
+                        int ndoff = (imleft) ? trace.elL.nbasis() : trace.elR.nbasis();
+                        for(IDX idoff = 0; idoff < ndoff; ++idoff) {
+                            for(IDX ieqf = 0; ieqf < ncomp; ++ieqf){
+                                IDX irow = (imleft) ? uL.get_layout()[idoff, ieqf]
+                                                    : uR.get_layout()[idoff, ieqf];
+                                jacR[irow, jcol] += (resp[idoff, ieqf] - res[idoff, ieqf]) / eps_scaled;
+                            }
+                        }
+
+                        // undo the perturbation
+                        uR[idofu, iequ] = old_val;
+                    }
+                }
+
+                // TODO: change to a scatter generalized operation to support CG structures
+                IDX glob_index_res = (imleft) 
+                    ? res.get_pindex(trace.elL.elidx, 0, 0)
+                    : res.get_pindex(trace.elR.elidx, 0, 0);
+
+                petsc::add_to_petsc_mat(jac, glob_index_res, glob_index_L, jacL);
+                petsc::add_to_petsc_mat(jac, glob_index_res, glob_index_R, jacR);
+            } else {
+                // compact data views 
+                dofspan uL{uL_data.data(), u.create_element_layout(trace.elL.elidx)};
+                dofspan uR{uR_data.data(), u.create_element_layout(trace.elR.elidx)};
+
+                // compact residual views
+                dofspan resL{resL_data.data(), res.create_element_layout(trace.elL.elidx)};
+                dofspan resLp{resLp_data.data(), res.create_element_layout(trace.elL.elidx)};
+
+                // compact jacobian views 
+                mdspan jacL{jacL_data.data(), extents{resL.size(), uL.size()}};
+                std::fill_n(jacL_data.begin(), jacL.size(), 0);
+
+                // extract the compact values from the global u view 
+                extract_elspan(trace.elL.elidx, u, uL);
+                extract_elspan(trace.elR.elidx, u, uR);
+
+                // zero out the residuals 
+                resL = 0;
+
+                // get the unperturbed residual and send to full residual
+                disc.boundaryIntegral(trace, fespace.meshptr->coord, uL, uR, resL);
+                scatter_elspan(trace.elL.elidx, 1.0, resL, 1.0, res);
+
+                // set up the perturbation amount scaled by unperturbed residual 
+                T eps_scaled = scale_fd_epsilon(epsilon, resL.vector_norm());
+
+                std::size_t glob_index_L = u.get_pindex(trace.elL.elidx, 0, 0);
+                std::size_t glob_res_index_L = res.get_pindex(trace.elL.elidx, 0, 0);
+
+                // perturb and form jacobian 
+                for(IDX idofu = 0; idofu < trace.elL.nbasis(); ++idofu){
+                    for(IDX iequ = 0; iequ < ncomp; ++iequ){
+                        // get the compact column index for this dof and component 
+                        IDX jcol = uL.get_layout()[idofu, iequ];
+
+                        // perturb
+                        T old_val = uL[idofu, iequ];
+                        uL[idofu, iequ] += eps_scaled;
+
+                        // zero out the residual 
+                        resLp = 0;
+
+                        // get the perturbed residual
+                        disc.boundaryIntegral(trace, fespace.meshptr->coord, uL, uR, resLp);
+
+                        // fill jacobian for this perturbation
+                        for(IDX idoff = 0; idoff < trace.elL.nbasis(); ++idoff) {
+                            for(IDX ieqf = 0; ieqf < ncomp; ++ieqf){
+                                IDX irow = uL.get_layout()[idoff, ieqf];
+                                jacL[irow, jcol] += (resLp[idoff, ieqf] - resL[idoff, ieqf]) / eps_scaled;
+                            }
+                        }
+
+                        // undo the perturbation
+                        uL[idofu, iequ] = old_val;
+                    }
+                }
+
+                // TODO: change to a scatter generalized operation to support CG structures
+                petsc::add_to_petsc_mat(jac, glob_index_L, glob_res_index_L, jacL);
+            }
         }
 
         // interior faces 
@@ -184,8 +314,8 @@ namespace iceicle::solvers {
             scatter_elspan(trace.elR.elidx, 1.0, resR, 1.0, res);
 
             // get the global index to the start of the contiguous component x dof range for L/R elem
-            std::size_t glob_index_L = u.get_layout()[trace.elL.elidx, 0, 0];
-            std::size_t glob_index_R = u.get_layout()[trace.elR.elidx, 0, 0];
+            std::size_t glob_index_L = u.get_pindex(trace.elL.elidx, 0, 0);
+            std::size_t glob_index_R = u.get_pindex(trace.elR.elidx, 0, 0);
 
             // set up the perturbation amount scaled by unperturbed residual 
             T eps_scaled = scale_fd_epsilon(epsilon, std::max(resL.vector_norm(), resR.vector_norm()));
@@ -232,10 +362,8 @@ namespace iceicle::solvers {
             }
             // send the jacobians to the petsc matrix 
             // (note global indices uL, then resL/resR)
-            petsc::add_to_petsc_mat(jac, proc_range_beg + glob_index_L, 
-                    proc_range_beg + glob_index_L, jacL);
-            petsc::add_to_petsc_mat(jac, proc_range_beg + glob_index_R, 
-                    proc_range_beg + glob_index_L, jacR);
+            petsc::add_to_petsc_mat(jac, glob_index_L, glob_index_L, jacL);
+            petsc::add_to_petsc_mat(jac, glob_index_R, glob_index_L, jacR);
             
             // perturb and form jacobian wrt uR
             // make compact jacobian views
@@ -278,10 +406,8 @@ namespace iceicle::solvers {
                 }
             }
             // send the jacobians to the petsc matrix 
-            petsc::add_to_petsc_mat(jac, proc_range_beg + glob_index_L, 
-                    proc_range_beg + glob_index_R, jacL);
-            petsc::add_to_petsc_mat(jac, proc_range_beg + glob_index_R, 
-                    proc_range_beg + glob_index_R, jacR);
+            petsc::add_to_petsc_mat(jac, glob_index_L, glob_index_R, jacL);
+            petsc::add_to_petsc_mat(jac, glob_index_R, glob_index_R, jacR);
         }
 
         // domain integral 
@@ -690,7 +816,7 @@ template<
 
         // preallocate storage for compact views of u 
         const std::size_t max_local_size =
-            fespace.dg_map.max_el_size_reqirement(neq);
+            fespace.dofs.max_el_size_reqirement(neq);
         std::vector<T> uL_storage(max_local_size);
         std::vector<T> uR_storage(max_local_size);
         std::vector<T> jacL_storage{};
@@ -805,10 +931,10 @@ template<
             }
         }
 
-        std::vector<T> resL_storage(fespace.dg_map.max_el_size_reqirement(u.nv()));
-        std::vector<T> resLp_storage(fespace.dg_map.max_el_size_reqirement(u.nv()));
-        std::vector<T> resR_storage(fespace.dg_map.max_el_size_reqirement(u.nv()));
-        std::vector<T> resRp_storage(fespace.dg_map.max_el_size_reqirement(u.nv()));
+        std::vector<T> resL_storage(fespace.dofs.max_el_size_reqirement(u.nv()));
+        std::vector<T> resLp_storage(fespace.dofs.max_el_size_reqirement(u.nv()));
+        std::vector<T> resR_storage(fespace.dofs.max_el_size_reqirement(u.nv()));
+        std::vector<T> resRp_storage(fespace.dofs.max_el_size_reqirement(u.nv()));
 
         // Jacobian wrt x 
         for(IDX jmdg = 0; jmdg < mdg_residual.ndof(); ++jmdg){
@@ -879,7 +1005,7 @@ template<
             // use a set to prevent repeats
             std::set<IDX>traces_to_visit{};
             for(IDX iel : fespace.el_surr_nodes.rowspan(inode)){
-                for(IDX itrace : fespace.fac_surr_el.rowspan(iel)){
+                for(IDX itrace : fespace.meshptr->facsuel.rowspan(iel)){
                     traces_to_visit.insert(itrace);
                 }
             }
@@ -1059,6 +1185,7 @@ template<
         geospan auto x,
         Vec res,
         Mat jac,
+        mpi::communicator_type comm,
         T epsilon = std::sqrt(std::numeric_limits<T>::epsilon())
     ) -> void 
     {
@@ -1074,12 +1201,12 @@ template<
         std::copy_n(u.data(), u.size(), ufull.data());
         std::copy_n(x.data(), x.size(), ufull.data() + u.size());
 
-        form_residual(fespace, disc, geo_map, std::span{ufull}, std::span{res_span});
+        form_residual(fespace, disc, geo_map, std::span{ufull}, std::span{res_span}, comm);
 
         for(IDX jdof = 0; jdof < ufull.size(); ++jdof) {
             T uold = ufull[jdof];
             ufull[jdof] += epsilon;
-            form_residual(fespace, disc, geo_map, std::span{ufull}, std::span{resp_data});
+            form_residual(fespace, disc, geo_map, std::span{ufull}, std::span{resp_data}, comm);
 
             for(IDX idof = 0; idof < res_span.size(); ++idof){
                 T fd_val = (resp_data[idof] - res_span[idof]) / epsilon;

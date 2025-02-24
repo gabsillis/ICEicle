@@ -22,7 +22,7 @@ p = naca[1] / 10.0
 t = naca[2] / 10.0 + naca[3] / 100.0
 
 # mesh size parameter
-lc_airfoil = 0.02
+lc_airfoil = 0.005
 lc_freestream = 0.3
 
 # ====================

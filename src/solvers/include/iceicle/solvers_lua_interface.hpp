@@ -2,12 +2,11 @@
 /// @author Gianni Absillis (gabsill@ncsu.edu)
 
 #pragma once
-#include "iceicle/disc/projection.hpp"
 #include "iceicle/fe_function/geo_layouts.hpp"
 #include "iceicle/disc/l2_error.hpp"
 #include "iceicle/geometry/face.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/string_utils.hpp"
-#include "iceicle/writer.hpp"
 #include <array>
 #include <iceicle/fespace/fespace.hpp>
 #include <iceicle/explicit_utils.hpp>
@@ -27,6 +26,9 @@
 #include <iceicle/corrigan_lm.hpp>
 #include <iceicle/petsc_newton.hpp>
 #include <iceicle/matrix_free_newton_krylov.hpp>
+#endif
+#ifdef ICEICLE_USE_VTK
+#include <iceicle/vtk_writer.hpp>
 #endif
 
 namespace iceicle::solvers {
@@ -91,13 +93,13 @@ namespace iceicle::solvers {
     /// @param fespace the finite element space 
     /// @param disc the discretization
     /// @param u the solution to write
-    template<class T, class IDX, int ndim, class DiscType, class LayoutPolicy>
+    template<class T, class IDX, int ndim, int conformity, class DiscType, class LayoutPolicy>
     auto lua_get_writer(
         sol::table config_tbl,
-        FESpace<T, IDX, ndim>& fespace,
+        FESpace<T, IDX, ndim, conformity>& fespace,
         DiscType& disc,
         fespan<T, LayoutPolicy> u 
-    ) -> io::Writer 
+    ) -> iceicle::io::Writer 
     {
         using namespace iceicle::util;
         io::Writer writer;
@@ -110,21 +112,38 @@ namespace iceicle::solvers {
             // NOTE: short circuiting &&
             if(writer_name && eq_icase(writer_name.value(), "dat")){
                 if constexpr (ndim == 1){
-                    io::DatWriter<T, IDX, ndim> dat_writer{fespace};
+                    io::DatWriter<T, IDX, ndim, conformity> dat_writer{fespace};
                     dat_writer.register_fields(u, disc.field_names);
                     writer = io::Writer{dat_writer};
                 } else {
-                    AnomalyLog::log_anomaly(Anomaly{"dat writer not defined for greater than 1D", general_anomaly_tag{}});
+                    AnomalyLog::log_anomaly("dat writer not defined for greater than 1D");
                 }
             }
 
             // .vtu writer 
             if(writer_name && eq_icase(writer_name.value(), "vtu")){
-                io::PVDWriter<T, IDX, ndim> pvd_writer{};
+                if(mpi::mpi_world_size() > 1)
+                    std::cerr << "Warning: vtu output is not written for parallel. \n"
+                        "Consider \"vtk\" as output writer instead.";
+                io::PVDWriter<T, IDX, ndim, conformity> pvd_writer{};
                 pvd_writer.register_fespace(fespace);
                 pvd_writer.register_fields(u, disc.field_names);
                 writer = pvd_writer;
             }
+#ifdef ICEICLE_USE_VTK
+            if(writer_name && eq_icase(writer_name.value(), "vtk")){
+                io::PVTUWriter pvtu_writer{fespace, mpi::comm_world};
+                io::output_field_function<T, DiscType::nv_comp>
+                    field_func{disc.output_field_names(), disc.output_field_func()};
+                pvtu_writer.register_fields(u, field_func);
+                writer = pvtu_writer;
+            }
+#else 
+
+            if(writer_name && eq_icase(writer_name.value(), "vtk")){
+                AnomalyLog::log_anomaly("Build with ICEICLE_USE_VTK=ON to use the vtk writer.");
+            }
+#endif
         }
         return writer;
     }
@@ -134,13 +153,13 @@ namespace iceicle::solvers {
     /// @param fespace the finite element space 
     /// @param disc the discretization
     /// @param u the solution to write
-    template<class T, class IDX, int ndim, class DiscType, class LayoutPolicy>
+    template<class T, class IDX, int ndim, int conformity, class DiscType, class LayoutPolicy>
     auto lua_get_residuals_writer(
         sol::table config_tbl,
-        FESpace<T, IDX, ndim>& fespace,
+        FESpace<T, IDX, ndim, conformity>& fespace,
         DiscType& disc,
         fespan<T, LayoutPolicy> u 
-    ) -> io::Writer 
+    ) -> iceicle::io::Writer 
     {
         using namespace iceicle::util;
         io::Writer writer;
@@ -151,7 +170,7 @@ namespace iceicle::solvers {
 
             // .vtu writer 
             if(writer_name && eq_icase(writer_name.value(), "vtu")){
-                io::PVDWriter<T, IDX, ndim> pvd_writer{};
+                io::PVDWriter<T, IDX, ndim, conformity> pvd_writer{};
                 pvd_writer.collection_name = "residuals";
                 pvd_writer.register_fespace(fespace);
                 pvd_writer.register_residuals(u, disc.residual_names, disc);
@@ -198,7 +217,7 @@ namespace iceicle::solvers {
             std::vector<T> res_storage{};
             // preallocate storage for compact views of u and res 
             const std::size_t max_local_size =
-                fespace.dg_map.max_el_size_reqirement(disc_type::dnv_comp);
+                fespace.dofs.max_el_size_reqirement(disc_type::dnv_comp);
             const std::size_t ncomp = disc_type::dnv_comp;
             std::vector<T> uL_storage(max_local_size);
             std::vector<T> uR_storage(max_local_size);
@@ -509,6 +528,8 @@ namespace iceicle::solvers {
 
                 // === Check for invalid state ===
                 if(AnomalyLog::size() > 0){
+                    if(mpi::mpi_world_rank() == 0)
+                        std::cerr << "Errors Found: Aborting solve" << std::endl;
                     AnomalyLog::handle_anomalies();
                     return;
                 }
@@ -588,7 +609,7 @@ namespace iceicle::solvers {
 
             // create an equivalent H1 Fespace for MDG residuals
             FESpace space_h1{fespace.meshptr};
-            fe_layout_right h1_layout{fespace.cg_map, tmp::to_size<DiscType::nv_comp>()};
+            fe_layout_right h1_layout{space_h1, tmp::to_size<DiscType::nv_comp>(), std::false_type{}};
             std::vector<T> h1_mdg_residual_data(h1_layout.size());
             fespan res_mdg_h1{h1_mdg_residual_data, h1_layout};
 
@@ -614,11 +635,12 @@ namespace iceicle::solvers {
                         solver.vis_callback = [&](IDX k, Vec res_data, Vec du_data){
                                  T res_norm;
                                 PetscCallAbort(PETSC_COMM_WORLD, VecNorm(res_data, NORM_2, &res_norm));
-                                std::cout << std::setprecision(8);
-                                std::cout << "itime: " << std::setw(6) << k
-                                    << " | residual l2: " << std::setw(14) << res_norm
-                                    << std::endl << std::endl;
-
+                                if(mpi::mpi_world_rank() == 0){
+                                    std::cout << std::setprecision(8);
+                                    std::cout << "itime: " << std::setw(6) << k
+                                        << " | residual l2: " << std::setw(14) << res_norm
+                                        << std::endl << std::endl;
+                                }
                                 // offset by initial solution iteration
                                 writer.write(k, (T) k);
 
@@ -630,11 +652,12 @@ namespace iceicle::solvers {
                             if(residuals_writer) residuals_writer.write(k, (T) k);
 
                             // get the MDG residuals 
-                            petsc::VecSpan res_span{res_data};
-                            dofspan ic_residual{res_span.data() + u.size(), ic_layout};
-                            auto res_mdg_dof_view = dof_view(res_mdg_h1);
-                            extract_icespan(ic_residual, res_mdg_dof_view);
-                            writer_mdg.write(k, (T) k);
+                            // TODO: need ownership span model
+//                            petsc::VecSpan res_span{res_data};
+//                            dofspan ic_residual{res_span.data() + u.size(), ic_layout};
+//                            auto res_mdg_dof_view = dof_view(res_mdg_h1);
+//                            extract_icespan(ic_residual, res_mdg_dof_view);
+//                            writer_mdg.write(k, (T) k);
                         };
 
                         // === Check for invalid state ===
@@ -647,9 +670,10 @@ namespace iceicle::solvers {
                         IDX kfinal = solver.solve(u);
 
                         // write the final iteration
-                        std::cout << "itime: " << std::setw(6) << kfinal 
-                            << " | Termination Criteria Reached"
-                            << std::endl << std::endl;
+                        if(mpi::mpi_world_rank() == 0)
+                            std::cout << "itime: " << std::setw(6) << kfinal 
+                                << " | Termination Criteria Reached"
+                                << std::endl << std::endl;
                         writer.write(kfinal, (T) kfinal);
                         if(residuals_writer) residuals_writer.write(kfinal, (T) kfinal);
                         write_restart(fespace, u, kfinal);
@@ -658,7 +682,8 @@ namespace iceicle::solvers {
                     if(eq_icase_any(solver_type, "lm", "gauss-newton")){
                         bool form_subproblem = solver_params.get_or("form_subproblem_mat", false); 
                         bool sparse_jacobian = solver_params.get_or("sparse_jacobian_calculation", true);
-                        CorriganLM solver{fespace, disc, conv_criteria, ls, geo_map, form_subproblem, sparse_jacobian};
+                        CorriganLM solver{fespace, disc, conv_criteria, ls, geo_map,
+                            mpi::comm_world, form_subproblem, sparse_jacobian};
 
                         // set options for the solver 
                         sol::optional<T> lambda_u = solver_params["lambda_u"];
@@ -678,7 +703,7 @@ namespace iceicle::solvers {
 
                         setup_and_solve(solver);
                     } else if(eq_icase_any(solver_type, "newton")) {
-                        PetscNewton solver{fespace, disc, conv_criteria, ls};
+                        PetscNewton solver{fespace, disc, conv_criteria, ls, mpi::comm_world};
                         setup_and_solve(solver);
                     } else if(eq_icase_any(solver_type, "mfnk", "matrix-free-newton")) {
                         MFNK solver{fespace, disc, conv_criteria, ls, geo_map};
@@ -779,18 +804,9 @@ namespace iceicle::solvers {
                             };
 
                             T error = l2_error(exactfunc, fespace, u);
-#ifdef ICEICLE_USE_MPI
-                            error = error * error; // un-sqrt it before we sum :3
-                            T error_reduce;
-                            MPI_Allreduce(&error, &error_reduce, 1, mpi_get_type<T>(), MPI_SUM, MPI_COMM_WORLD);
-
-                            int myrank;
-                            MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+                            int myrank = mpi::rank(mpi::comm_world);
                             if(myrank == 0)
-                                std::cout << "L2 error: " << std::setprecision(12) << std::sqrt(error_reduce) << std::endl;
-#else
-                            std::cout << "L2 error: " << std::setprecision(12) << error << std::endl;
-#endif
+                                std::cout << "L2 error: " << std::setprecision(12) << error << std::endl;
                         } 
 
                         if(eq_icase(task_name, "l1_error")){
@@ -818,17 +834,8 @@ namespace iceicle::solvers {
                             };
 
                             T error = l1_error(exactfunc, fespace, u);
-#ifdef ICEICLE_USE_MPI
-                            T error_reduce;
-                            MPI_Allreduce(&error, &error_reduce, 1, mpi_get_type<T>(), MPI_SUM, MPI_COMM_WORLD);
-
-                            int myrank;
-                            MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
-                            if(myrank == 0)
-                                std::cout << "L1 error: " << std::setprecision(12) << error_reduce << std::endl;
-#else
-                            std::cout << "L1 error: " << std::setprecision(12) << error << std::endl;
-#endif
+                            if(mpi::rank(mpi::comm_world) == 0)
+                                std::cout << "L1 error: " << std::setprecision(12) << error << std::endl;
                         } 
 
                         if(eq_icase(task_name, "linf_error")) {

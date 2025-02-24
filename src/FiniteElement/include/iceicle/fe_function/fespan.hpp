@@ -11,7 +11,8 @@
 #include "iceicle/fe_function/layout_right.hpp"
 #include "iceicle/fe_function/node_set_layout.hpp"
 #include "iceicle/fespace/fespace.hpp"
-#include <cstdlib>
+#include "iceicle/iceicle_mpi_utils.hpp"
+#include "iceicle/tmp_utils.hpp"
 #include <ostream>
 #include <ranges>
 #include <span>
@@ -36,9 +37,8 @@ namespace iceicle {
         using reference = ElementType&;
         using data_handle_type = ElementType*;
 
-        constexpr reference access(data_handle_type p, std::size_t i) const noexcept {
-            return p[i];
-        } 
+        constexpr reference access(data_handle_type p, std::size_t i) const noexcept 
+        { return p[i]; } 
 
         constexpr data_handle_type offset(data_handle_type p, std::size_t i) const noexcept {
             return p + i;
@@ -73,11 +73,15 @@ namespace iceicle {
             // ============
             // = Typedefs =
             // ============
-            using value_type = T;
+            using value_type = std::remove_cv<T>::type;
             using layout_type = LayoutPolicy;
             using accessor_type = AccessorPolicy;
-            using pointer = AccessorPolicy::data_handle_type;
-            using reference = AccessorPolicy::reference;
+            using pointer = typename std::conditional<LayoutPolicy::includes_ghost(), 
+                  const typename AccessorPolicy::data_handle_type,
+                  typename AccessorPolicy::data_handle_type>::type;
+            using reference = typename std::conditional<LayoutPolicy::includes_ghost(), 
+                  const typename AccessorPolicy::reference,
+                  typename AccessorPolicy::reference>::type;
             using index_type = LayoutPolicy::index_type;
             using size_type = std::make_unsigned_t<index_type>;
             using dof_mapping_type = LayoutPolicy::dof_mapping_type;
@@ -106,22 +110,27 @@ namespace iceicle {
             constexpr fespan(R&& data_range, const LayoutPolicy &dof_map)
             noexcept : _ptr(std::ranges::data(data_range)), _layout{dof_map}, _accessor{}
             {
-                static_assert(std::is_same_v<std::ranges::range_value_t<decltype(data_range)>, T>, "value type must match");
+                static_assert(std::is_same_v<tmp::cv_qualified_range_value_t<R>, T>, "value type must match");
                 T sz = std::ranges::size(data_range);
-                if(sz < dof_map.size()){
+                if(sz < size()){
                     util::AnomalyLog::log_anomaly(util::Anomaly{
                         "Provided data range cannot support the extent of the layout",
                         util::general_anomaly_tag{}});
                 }
             }
 
-            constexpr fespan(std::ranges::contiguous_range auto data_range, const LayoutPolicy &dof_map,
-                    const AccessorPolicy &_accessor)
-            noexcept : _ptr(std::ranges::data(data_range)), _layout{dof_map}, _accessor{_accessor}
+            constexpr fespan(
+                    std::ranges::contiguous_range auto data_range,
+                    const LayoutPolicy &dof_map,
+                    const AccessorPolicy &_accessor
+            ) noexcept : _ptr(std::ranges::data(data_range)),
+                      _layout{dof_map}, _accessor{_accessor}
             {
                 static_assert(std::is_same_v<std::ranges::range_value_t<decltype(data_range)>, T>, "value type must match");
-                util::AnomalyLog::check(std::ranges::size(data_range) < dof_map.size(),
-                    util::Anomaly{"Provided data range cannot support the extent of the layout", util::general_anomaly_tag{}});
+                util::AnomalyLog::check(std::ranges::size(data_range) >= size(),
+                    util::Anomaly{"Provided data range cannot support the extent of the layout"
+                        " data range size: " + std::to_string(std::ranges::size(data_range))
+                        + " | layout_size: " + std::to_string(size()), util::general_anomaly_tag{}});
             }
 
             template<typename... LayoutArgsT>
@@ -135,11 +144,20 @@ namespace iceicle {
             /** @brief get the upper bound of the 1D index space */
             constexpr size_type size() const noexcept { return _layout.size(); }
 
+            /** @brief get the cumulative size of the 1D index space accross all parallel partitions */
+            [[nodiscard]] inline constexpr 
+            auto size_parallel() const noexcept 
+            -> size_type
+            { return _layout.dof_partitioning.size(); }
+
             /** @brief get the number of elements represented in the layout */
             [[nodiscard]] constexpr size_type nelem() const noexcept { return _layout.nelem(); }
 
             /** @brief get the number of degrees of freedom for a given element represented in the layout */
             [[nodiscard]] constexpr size_type ndof(index_type ielem) const noexcept { return _layout.ndof(ielem); }
+
+            /** @brief get the number of global degrees of freedom */
+            [[nodiscard]] constexpr size_type ndof() const noexcept { return _layout.ndof(); }
 
             /** @brief get the number of vector components */
             [[nodiscard]] constexpr size_type nv() const noexcept { return _layout.nv(); }
@@ -147,37 +165,202 @@ namespace iceicle {
             /** @brief get the static vector extent */
             [[nodiscard]] inline static constexpr std::size_t static_extent() noexcept { return LayoutPolicy::static_extent(); }
 
+            // ====================
+            // = Property Queries =
+            // ====================
+            [[nodiscard]] inline static constexpr 
+            bool includes_ghost_elements(){
+                return LayoutPolicy::includes_ghost();
+            }
+
+            // ====================
+            // = Index Operations =
+            // ====================
+
+            /** @brief given a process-local global degree of freedom, get the parallel dof index */
+            [[nodiscard]] inline constexpr 
+            auto get_pdof(index_type igdof) const noexcept 
+            -> index_type 
+            { return _layout.dof_partitioning.p_indices[igdof]; }
+
+            /** 
+             * @brief given a process-local global degree of freedom and vector componeent index,
+             * get the parallel data index
+             */
+            [[nodiscard]] inline constexpr 
+            auto get_pindex(index_type igdof, index_type iv) const noexcept 
+            -> index_type 
+            { return _layout.get_pindex(igdof, iv); }
+
+            /** 
+             * @brief given an index triple
+             * get the parallel data index
+             */
+            [[nodiscard]] inline constexpr 
+            auto get_pindex(index_type ielem, index_type ildof, index_type iv) const noexcept 
+            -> index_type 
+            { return _layout.get_pindex(ielem, ildof, iv); }
+
+            /** @brief given the parallel dof index, get the mpi rank that owns this index */
+            [[nodiscard]] inline constexpr 
+            auto owning_rank(index_type pdof) const noexcept
+            -> int 
+            { return _layout.dof_partitioning.owning_rank(pdof); }
+
+            //** @brief get the number of dofs owned by this process */
+            [[nodiscard]] inline constexpr 
+            auto owned_ndof(mpi::communicator_type comm) const noexcept 
+            -> size_type
+            { return _layout.dof_partitioning.owned_range_size(mpi::rank(comm)); }
+
+            /** @brief get the number of data entries (vector components)
+             * on this process 
+             */
+            [[nodiscard]] inline constexpr 
+            auto owned_size(mpi::communicator_type comm) const noexcept 
+            -> size_type
+            { return owned_ndof(comm) * nv(); }
+
             // ===============
             // = Data Access =
             // ===============
 
-            /** @brief index into the data using a fe_index 
-             * @param fe_index represents the element, dof, and vector component indices 
-             * @return a reference to the data 
+            /** 
+             * @brief index into the data using a finite element index triple 
+             * the element index, the element local dof index, the vector component index
+             * @param ielem the element index 
+             * @param idof the element local dof index
+             * @param iv the vector component index
+             * @return a reference to the data at the given index triple
              */
-            constexpr reference operator[](index_type ielem, index_type idof, index_type iv) const {
-                return _accessor.access(_ptr, _layout.operator[](ielem, idof, iv));
-            }
+            [[nodiscard]] inline constexpr
+            auto operator[](index_type ielem, index_type idof, index_type iv) const
+            -> reference
+            { return _accessor.access(_ptr, _layout.operator[](ielem, idof, iv)); }
+
+            /** 
+             * @brief index into the data using a index pair
+             * the global dof index, the vector component index
+             * @param igdof the element local dof index
+             * @param iv the vector component index
+             * @return a reference to the data at the given index pair
+             */
+            [[nodiscard]] inline constexpr
+            auto operator[](index_type igdof, index_type iv) const
+            -> reference
+            { return _accessor.access(_ptr, _layout.operator[](igdof, iv)); }
 
             /**
              * @brief if using the default accessor, allow access to the underlying storage
              * @return the underlying storage 
              */
-            constexpr pointer data() noexcept 
-            requires(std::is_same_v<AccessorPolicy, default_accessor<T>>) 
-            { return _ptr; }
-
-            /**
-             * @brief if using the default accessor, allow access to the underlying storage
-             * @return the underlying storage 
-             */
-            constexpr const pointer data() const noexcept 
+            [[nodiscard]] inline constexpr 
+            auto data() const noexcept 
+            -> pointer
             requires(std::is_same_v<AccessorPolicy, default_accessor<T>>) 
             { return _ptr; }
 
             // ===========
             // = Utility =
             // ===========
+
+            /**
+             * @brief synchronize data from the owning ranks 
+             * after this call all data at each parallel dof index should match the value 
+             * on the owning rank for that parallel dof index
+             * @param comm the mpi communicator
+             */
+            inline constexpr
+            auto sync_mpi(
+                mpi::communicator_type comm = mpi::comm_world
+            ) -> void
+            {
+#ifdef ICEICLE_USE_MPI
+                const pindex_map<index_type> &dof_partitioning = _layout.dof_partitioning;
+                
+                int nrank = mpi::size(comm), myrank = mpi::rank(comm);
+
+                // for each mpi rank, list the dofs we need to recieve
+                std::vector< std::vector< index_type > > to_recieve(nrank);
+                // start loop after owned range
+                for(index_type lindex = dof_partitioning.owned_range_size(myrank); 
+                        lindex < ndof(); ++lindex) {
+                    index_type pindex = dof_partitioning.p_indices[lindex];
+                    to_recieve[dof_partitioning.owning_rank(pindex)].push_back(pindex);
+                }
+
+                // for each mpi rank, list the dofs we need to send
+                std::vector< std::vector< index_type > > to_send(nrank);
+                std::vector< std::vector< T > > send_data(nrank);
+
+                std::vector<MPI_Request> requests;
+                for(int irank = 0; irank < nrank; ++irank){
+                    if(irank != myrank){ 
+                        requests.emplace_back();
+                        MPI_Isend(to_recieve[irank].data(), to_recieve[irank].size(), 
+                                mpi_get_type(to_recieve[irank].data()), irank, 0, comm, &requests.back());
+                    }
+                }
+
+                for(int irank = 0; irank < nrank; ++irank){
+                    if(irank != myrank){
+                        MPI_Status status;
+                        MPI_Probe(irank, 0, comm, &status);
+                        int recv_sz;
+                        MPI_Get_count(&status, mpi_get_type<index_type>(), &recv_sz);
+                        to_send[irank].resize(recv_sz);
+                        MPI_Recv(to_send[irank].data(), recv_sz, mpi_get_type<index_type>(), 
+                                irank, 0, comm, MPI_STATUS_IGNORE);
+                    }
+                }
+
+                // wait for isends
+                MPI_Waitall(requests.size(), requests.data(), MPI_STATUSES_IGNORE);
+                requests.clear();
+
+                // build the data vectors to send
+                for(int irank = 0; irank < nrank; ++irank){
+                    if(irank != myrank){
+                        send_data[irank].reserve(to_send[irank].size() * nv());
+                        for(index_type pidx : to_send[irank]){
+                            index_type igdof = dof_partitioning.inv_p_indices.at(pidx);
+                            for(int iv = 0; iv < nv(); ++iv)
+                                send_data[irank].push_back(operator[](igdof, iv));
+                        }
+
+                        requests.emplace_back();
+                        MPI_Isend(send_data[irank].data(), send_data[irank].size(),
+                                mpi_get_type(send_data[irank].data()), 
+                                irank, 1, comm, &requests.back());
+                    }
+                }
+
+                for(int irank = 0; irank < nrank; ++irank){
+                    if(irank != myrank){
+                        MPI_Status status;
+                        MPI_Probe(irank, 1, comm, &status);
+                        int recv_sz;
+                        MPI_Get_count(&status, mpi_get_type<index_type>(), &recv_sz);
+                        std::vector<T> recv_data(recv_sz);
+                        MPI_Recv(recv_data.data(), recv_sz, mpi_get_type<T>(), 
+                                irank, 1, comm, MPI_STATUS_IGNORE);
+
+                        auto recieve_it = recv_data.begin();
+                        for(index_type pidx : to_recieve[irank]){
+                            index_type igdof = dof_partitioning.inv_p_indices.at(pidx);
+                            for(int iv = 0; iv < nv(); ++iv){
+                                operator[](igdof, iv) = *recieve_it;
+                                ++recieve_it;
+                            }
+                        }
+                    }
+                }
+
+                // wait for isends
+                MPI_Waitall(requests.size(), requests.data(), MPI_STATUSES_IGNORE);
+                requests.clear();
+#endif
+            }
 
             /**
              * @brief create an element local layout 
@@ -208,6 +391,7 @@ namespace iceicle {
              * @return reference to this
              */
             constexpr fespan<T, LayoutPolicy, AccessorPolicy> &operator=( T value )
+            requires(!LayoutPolicy::includes_ghost())
             {
                 for(int i = 0; i < size(); ++i){
                     _ptr[i] = value;
@@ -215,8 +399,11 @@ namespace iceicle {
                 return *this;
             }
 
-            /** @brief get a const reference too the layout policy */
-            constexpr const LayoutPolicy &get_layout() const { return _layout; }
+            /** @brief get a const reference to the layout policy */
+            constexpr const LayoutPolicy& get_layout() const { return _layout; }
+
+            /** @brief get a const reference to the accessor policy */
+            constexpr const AccessorPolicy& get_accessor() const { return _accessor; }
 
             /**
              * @brief get the norm of the vector data components 
@@ -226,14 +413,20 @@ namespace iceicle {
              * @return the vector L^p norm 
              */
             template<int order = 2>
-            constexpr T vector_norm(){
+            constexpr auto 
+            vector_norm(mpi::communicator_type comm = mpi::comm_world)
+            -> value_type 
+            {
 
-                T sum = 0;
-                // TODO: be more specific about the index space
-                // maybe by delegating to the LayoutPolicy
-                for(int i = 0; i < size(); ++i){
-                    sum += std::pow(_ptr[i], order);
+                value_type sum = 0;
+                for(index_type idof = 0; idof < owned_ndof(comm); ++idof){
+                    for(index_type iv = 0; iv < nv(); ++iv){
+                        sum += std::pow(operator[](idof, iv), order);
+                    }
                 }
+#ifdef ICEICLE_USE_MPI
+                MPI_Allreduce(MPI_IN_PLACE, &sum, 1, mpi_get_type(sum), MPI_SUM, comm);
+#endif
                 
                 if constexpr (order == 2){
                     return std::sqrt(sum);
@@ -270,27 +463,43 @@ namespace iceicle {
     fespan(T *data, const LayoutPolicy &) -> fespan<T, LayoutPolicy>;
 
     template<std::ranges::contiguous_range R, class LayoutPolicy>
-    fespan(R&& data_range, const LayoutPolicy &) -> fespan< std::ranges::range_value_t<R>, LayoutPolicy >;
+    fespan(R&& data_range, const LayoutPolicy &) -> fespan< tmp::cv_qualified_range_value_t<R>, LayoutPolicy >;
+
+    template<std::ranges::contiguous_range R, class LayoutPolicy, class AccessorPolicy>
+    fespan(R&& data_range, const LayoutPolicy &, const AccessorPolicy&)
+    -> fespan< std::ranges::range_value_t<R>, LayoutPolicy, AccessorPolicy>;
 
     /**
      * @brief compute a vector scalar product and add to a vector 
      * y <= alpha * x + y
      *
+     * performs this operation on the greatest valid subset of indices 
+     * in the intersection of dofs of x and y
+     *
      * @param [in] alpha the scalar to multiply x by
      * @param [in] x the fespan to add 
      * @param [in/out] y the fespan to add to
      */
-    template<typename T, class LayoutPolicyx, class LayoutPolicyy>
-    void axpy(T alpha, const fespan<T, LayoutPolicyx> &x, fespan<T, LayoutPolicyy> y){
+    template<typename Tx, typename Ty, class LayoutPolicyx, class LayoutPolicyy>
+    void axpy(auto alpha, fespan<Tx, LayoutPolicyx> x, fespan<Ty, LayoutPolicyy> y)
+    requires(
+            std::is_arithmetic<std::remove_cv_t<Tx>>::value 
+            and std::is_arithmetic<std::remove_cv_t<Ty>>::value 
+            and std::is_arithmetic<std::remove_cv_t<decltype(alpha)>>::value 
+    ) {
+        using index_type = decltype(x)::index_type;
+
         if constexpr(std::is_same_v<LayoutPolicyy, LayoutPolicyx>) {
             // do in a single loop over the 1d index space 
-            T *ydata = y.data();
-            T *xdata = x.data();
-            for(int i = 0; i < x.size(); ++i){
+            Ty *ydata = y.data();
+            Tx *xdata = x.data();
+            index_type valid_size = std::min(x.size(), y.size());
+            for(index_type i = 0; i < valid_size; ++i){
                 ydata[i] += alpha * xdata[i];
             }
         } else {
-            for(int ielem = 0; ielem < x.nelem(); ++ielem){
+            index_type valid_nelem = std::min(x.nelem(), y.nelem());
+            for(index_type ielem = 0; ielem < valid_nelem; ++ielem){
                 for(int idof = 0; idof < x.ndof(ielem); ++idof){
                     for(int iv = 0; iv < x.nv(); ++iv){
                         y[ielem, idof, iv] += alpha * x[ielem, idof, iv];
@@ -304,21 +513,28 @@ namespace iceicle {
      * @brief compute a vector scalar product and add to a scaled vector
      * y <= alpha * x + beta * y
      *
+     * performs this operation on the greatest valid subset of indices 
+     * in the intersection of dofs of x and y
+     *
      * @param [in] alpha the scalar to multiply x by
      * @param [in] x the fespan to add 
      * @param [in/out] y the fespan to add to
      */
     template<typename T, class LayoutPolicyx, class LayoutPolicyy>
-    void axpby(T alpha, const fespan<T, LayoutPolicyx> &x, T beta, fespan<T, LayoutPolicyy> y){
+    void axpby(T alpha, fespan<T, LayoutPolicyx> x, T beta, fespan<T, LayoutPolicyy> y){
+        using index_type = decltype(x)::index_type;
+
         if constexpr(std::is_same_v<LayoutPolicyy, LayoutPolicyx>) {
             // do in a single loop over the 1d index space 
             T *ydata = y.data();
             T *xdata = x.data();
-            for(int i = 0; i < x.size(); ++i){
+            index_type valid_size = std::min(x.size(), y.size());
+            for(int i = 0; i < valid_size; ++i){
                 ydata[i] = alpha * xdata[i] + beta * ydata[i];
             }
         } else {
-            for(int ielem = 0; ielem < x.nelem(); ++ielem){
+            index_type valid_nelem = std::min(x.nelem(), y.nelem());
+            for(int ielem = 0; ielem < valid_nelem; ++ielem){
                 for(int idof = 0; idof < x.ndof(ielem); ++idof){
                     for(int iv = 0; iv < x.nv(); ++iv){
                         y[ielem, idof, iv] = alpha * x[ielem, idof, iv] + beta * y[ielem, idof, iv];
@@ -331,17 +547,23 @@ namespace iceicle {
     /**
      * @brief copy the data from fespan x to fespan y
      *
+     * performs this operation on the greatest valid subset of indices 
+     * in the intersection of dofs of x and y
+     *
      * @param [in] x the fespan to copy from
      * @param [out] y the fespan to copy to
      */
     template<typename T, class LayoutPolicyx, class LayoutPolicyy>
-    void copy_fespan(const fespan<T, LayoutPolicyx> &x, fespan<T, LayoutPolicyy> y){
+    void copy_fespan(fespan<T, LayoutPolicyx> x, fespan<T, LayoutPolicyy> y){
+        using index_type = decltype(x)::index_type;
         if constexpr(std::is_same_v<LayoutPolicyy, LayoutPolicyx>) {
+            index_type valid_size = std::min(x.size(), y.size());
             // do in a single loop over the 1d index space 
-            std::copy_n(x.data(), x.size(), y.data());
+            std::copy_n(x.data(), valid_size, y.data());
         } else {
+            index_type valid_nelem = std::min(x.nelem(), y.nelem());
             // TODO: more assurances that x and y still share a space
-            for(int ielem = 0; ielem < x.nelem(); ++ielem){
+            for(int ielem = 0; ielem < valid_nelem; ++ielem){
                 for(int idof = 0; idof < x.ndof(ielem); ++idof){
                     for(int iv = 0; iv < x.nv(); ++iv){
                         y[ielem, idof, iv] = x[ielem, idof, iv];
@@ -349,6 +571,19 @@ namespace iceicle {
                 }
             }
         }
+    }
+
+    /** 
+     * @brief cast the view u, to one that excludes the additional dofs from interprocess ghost elements 
+     * This ensures that the span meets the invariants enforced for writeability
+     * @param u the data view to cast 
+     * @return a new fespan with over the dofs without the interprocess ghost elements
+     */
+    template<class T, class LayoutPolicy, class AccessorPolicy>
+    auto exclude_ghost(fespan<T, LayoutPolicy, AccessorPolicy> u)
+    { 
+        return fespan{std::span{u.data(), u.data() + u.size()},
+                exclude_ghost(u.get_layout()), u.get_accessor()}; 
     }
 
     /**
@@ -434,32 +669,18 @@ namespace iceicle {
              * @param iv the vector index
              * @return a reference to the data 
              */
-            constexpr reference operator[](index_type idof, index_type iv){
-                return _accessor.access(_ptr, _layout[idof, iv]);
-            }
-
-            /** @brief index into the data using the set order
-             * @param idof the degree of freedom index 
-             * @param iv the vector index
-             * @return a reference to the data 
-             */
-            constexpr const reference operator[](index_type idof, index_type iv) const {
-                return _accessor.access(_ptr, _layout[idof, iv]);
-            }
+            [[nodiscard]] inline constexpr 
+            auto operator[](index_type idof, index_type iv) const 
+            -> reference
+            { return _accessor.access(_ptr, _layout[idof, iv]); }
 
             /**
              * @brief if using the default accessor, allow access to the underlying storage
              * @return the underlying storage 
              */
-            constexpr pointer data() noexcept 
-            requires(std::is_same_v<AccessorPolicy, default_accessor<T>>) 
-            { return _ptr; }
-
-            /**
-             * @brief if using the default accessor, allow access to the underlying storage
-             * @return the underlying storage 
-             */
-            constexpr const pointer data() const noexcept 
+            [[nodiscard]] inline constexpr 
+            auto data() const noexcept 
+            -> pointer
             requires(std::is_same_v<AccessorPolicy, default_accessor<T>>) 
             { return _ptr; }
 
@@ -469,27 +690,16 @@ namespace iceicle {
              * @param idof the degree of freedom to index at 
              * @return std::span over the vector component data at idof 
              */
-            constexpr inline 
-            auto span_at_dof(index_type idof) -> std::span<value_type> {
-                return std::span{_ptr + _layout[idof, 0], _ptr + _layout[idof, 0] + _layout.nv()};
-            }
-
-            /**
-             * @brief access the underlying data as a std::span 
-             * at the given dof 
-             * @param idof the degree of freedom to index at 
-             * @return std::span over the vector component data at idof 
-             */
-            constexpr inline 
-            auto span_at_dof(index_type idof) const -> std::span<const value_type> {
-                return std::span{_ptr + _layout[idof, 0], _ptr + _layout[idof, 0] + _layout.nv()};
-            }
+            [[nodiscard]] constexpr inline 
+            auto span_at_dof(index_type idof)
+            -> std::span<T>
+            { return std::span{_ptr + _layout[idof, 0], _ptr + _layout[idof, 0] + _layout.nv()}; }
 
             /**
              * @brief get the equivalent 1D index of the multi-dimensional indices 
              * @return the 1D index determined by the layout 
              */
-            constexpr inline 
+            [[nodiscard]] constexpr inline 
             auto index_1d(index_type idof, index_type iv) const 
             -> index_type 
             { return _layout[idof, iv]; }
@@ -523,7 +733,8 @@ namespace iceicle {
             template<class otherAccessor>
             constexpr inline 
             auto operator+=(const dofspan<T, LayoutPolicy, otherAccessor>& other)
-            -> dofspan<T, LayoutPolicy, AccessorPolicy>& {
+            -> dofspan<T, LayoutPolicy, AccessorPolicy>& 
+            {
                 for(index_type idof = 0; idof < ndof(); ++idof){
                     for(index_type iv = 0; iv < nv(); ++iv){
                         operator[](idof, iv) += other[idof, iv];
@@ -818,8 +1029,15 @@ namespace iceicle {
      * @param [in] x the dofspan to add 
      * @param [in/out] y the dofspan to add to
      */
-    template<typename T, class LayoutPolicy>
-    auto axpy(T alpha, dofspan<T, LayoutPolicy> x, dofspan<T, LayoutPolicy> y) -> void {
+    template<typename Tx, typename Ty, class LayoutPolicy>
+    auto axpy(auto alpha, dofspan<Tx, LayoutPolicy> x, dofspan<Ty, LayoutPolicy> y)
+    -> void 
+    requires(
+            std::is_arithmetic<std::remove_cv_t<Tx>>::value 
+            and std::is_arithmetic<std::remove_cv_t<Ty>>::value 
+            and std::is_arithmetic<std::remove_cv_t<decltype(alpha)>>::value 
+    )
+    {
         using index_type = decltype(y)::index_type;
         for(index_type idof = 0; idof < x.ndof(); ++idof){
             for(index_type iv = 0; iv < x.nv(); ++iv){
@@ -1071,83 +1289,5 @@ namespace iceicle {
                     + beta * all_nodes_data[ignode][iv];
             }
         }
-    }
-
-    /**
-     * @brief restrict the set of nodes to the nodes on interior faces 
-     * that have a interface conservation vector norm above the given threshold 
-     *
-     * @return the nodeset based on the threshold
-     */
-    template<class T, class IDX, int ndim, class disc_type, class uLayout, class uAccessor, std::size_t vextent>
-    auto select_nodeset(
-        FESpace<T, IDX, ndim> &fespace,                  /// [in] the finite elment space
-        disc_type disc,                                  /// [in] the discretization
-        fespan<T, uLayout, uAccessor> u,                 /// [in] the current finite element solution
-        T residual_threshold,                            /// [in] residual threshhold for selecting a trace
-        std::integral_constant<std::size_t, vextent> nv  /// [in] the number of vector components for Interface Conservation
-    ) -> nodeset_dof_map<IDX> {
-        using index_type = IDX;
-        using trace_type = FESpace<T, IDX, ndim>::TraceType;
-
-
-        // we will be filling the selected traces, nodes, 
-        // and selected nodes -> gnode index map respectively
-        std::vector<index_type> selected_traces{};
-
-        std::vector<T> res_storage{};
-        // preallocate storage for compact views of u and res 
-        const std::size_t max_local_size =
-            fespace.dg_map.max_el_size_reqirement(disc_type::dnv_comp);
-        const std::size_t ncomp = disc_type::dnv_comp;
-        std::vector<T> uL_storage(max_local_size);
-        std::vector<T> uR_storage(max_local_size);
-
-        // loop over the traces and select traces and nodes based on IC residual
-        for(const trace_type &trace : fespace.get_interior_traces()){
-            // compact data views 
-            dofspan uL{uL_storage.data(), u.create_element_layout(trace.elL.elidx)};
-            dofspan uR{uR_storage.data(), u.create_element_layout(trace.elR.elidx)};
-
-            // trace data view
-            trace_layout_right<IDX, vextent> ic_res_layout{trace};
-            res_storage.resize(ic_res_layout.size());
-            dofspan ic_res{res_storage, ic_res_layout};
-
-            // extract the compact values from the global u view 
-            extract_elspan(trace.elL.elidx, u, uL);
-            extract_elspan(trace.elR.elidx, u, uR);
-
-            // zero out and then get interface conservation
-            ic_res = 0.0;
-            disc.interface_conservation(trace, fespace.meshptr->coord, uL, uR, ic_res);
-
-            std::cout << "Interface nr: " << trace.facidx; 
-            std::cout << " | nodes:";
-            for(index_type inode : trace.face->nodes_span()){
-                std::cout << " " << inode;
-            }
-            std::cout << " | ic residual: " << ic_res.vector_norm() << std::endl; 
-
-            // if interface conservation residual is high enough,
-            // add the trace and nodes of the trace
-            if(ic_res.vector_norm() >= residual_threshold){
-                selected_traces.push_back(trace.facidx);
-            }
-        }
-
-        return nodeset_dof_map{selected_traces, fespace};
-    }
-
-    template<class T, class IDX, int ndim>
-    auto select_all_nodes(
-        FESpace<T, IDX, ndim> &fespace
-    ) -> nodeset_dof_map<IDX> {
-        using index_type = IDX;
-        using trace_type = FESpace<T, IDX, ndim>::TraceType;
-
-        std::vector<index_type> selected_traces(fespace.interior_trace_end - fespace.interior_trace_start);
-        std::iota(selected_traces.begin(), selected_traces.end(), fespace.interior_trace_start);
-        return nodeset_dof_map{selected_traces, fespace};
     }
 }

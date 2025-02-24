@@ -12,6 +12,7 @@
 #include "iceicle/fespace/fespace.hpp"
 #include "iceicle/form_residual.hpp"
 #include "iceicle/explicit_utils.hpp"
+#include "iceicle/iceicle_mpi_utils.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -87,11 +88,11 @@ public:
         const StopCondition &stop_condition
     )
     requires specifies_ncomp<disc_class> && TerminationCondition<StopCondition>
-    : res_data(fespace.dg_map.calculate_size_requirement(disc_class::nv_comp)),
-      res1_data(fespace.dg_map.calculate_size_requirement(disc_class::nv_comp)),
-      res2_data(fespace.dg_map.calculate_size_requirement(disc_class::nv_comp)),
-      res3_data(fespace.dg_map.calculate_size_requirement(disc_class::nv_comp)),
-      u_stage_data(fespace.dg_map.calculate_size_requirement(disc_class::nv_comp)),
+    : res_data(fespace.dofs.calculate_size_requirement(disc_class::nv_comp)),
+      res1_data(fespace.dofs.calculate_size_requirement(disc_class::nv_comp)),
+      res2_data(fespace.dofs.calculate_size_requirement(disc_class::nv_comp)),
+      res3_data(fespace.dofs.calculate_size_requirement(disc_class::nv_comp)),
+      u_stage_data(fespace.dofs.calculate_size_requirement(disc_class::nv_comp)),
       timestep{timestep}, stop_condition{stop_condition}
     {}
 
@@ -104,7 +105,8 @@ public:
      * @param [in/out] u the solution as an fespan view
      */
     template<int ndim, class disc_class, class LayoutPolicy, class uAccessorPolicy>
-    void step(FESpace<T, IDX, ndim> &fespace, disc_class &disc, fespan<T, LayoutPolicy, uAccessorPolicy> u)
+    void step(FESpace<T, IDX, ndim> &fespace, disc_class &disc, fespan<T, LayoutPolicy, uAccessorPolicy> u,
+            mpi::communicator_type comm)
     requires TimestepT<TimestepClass, T, IDX, ndim, disc_class, LayoutPolicy, uAccessorPolicy>
     {
        
@@ -117,24 +119,24 @@ public:
         // sync dt between processes
 #ifdef ICEICLE_USE_MPI 
         T dt_individual = dt;
-        MPI_Allreduce(&dt_individual, &dt, 1, mpi_get_type<T>(), MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(&dt_individual, &dt, 1, mpi_get_type<T>(), MPI_MIN, MPI_COMM_WORLD);
 #endif
 
         // create view of the residual using the same Layout as u 
-        fespan res{res_data.data(), u.get_layout()};
+        fespan res{res_data.data(), exclude_ghost(u.get_layout())};
 
         // storage for rhs of mass matrix equation
-        int max_ndof = fespace.dg_map.max_el_size_reqirement(1);
+        int max_ndof = fespace.dofs.max_el_size_reqirement(1);
         std::vector<T> b(max_ndof);
         std::vector<T> du(max_ndof);
 
         // function to get the residual for a single stage
-        auto stage_residual = [&](fespan<T, LayoutPolicy> u_stage, fespan<T, LayoutPolicy> res_stage){
+        auto stage_residual = [&](fespan<T, LayoutPolicy> u_stage, auto res_stage){
             // zero out
             res_stage = 0;
 
             // get the rhs
-            form_residual(fespace, disc, u, res);
+            form_residual(fespace, disc, u, res, comm);
 
             // invert mass matrices
             // TODO: prestore mass matrix with the reference element 
@@ -164,9 +166,9 @@ public:
         };
 
         // describe fespans for intermediate states 
-        fespan res1{res1_data.data(), u.get_layout()};
-        fespan res2{res2_data.data(), u.get_layout()};
-        fespan res3{res3_data.data(), u.get_layout()};
+        fespan res1{res1_data.data(), exclude_ghost(u.get_layout())};
+        fespan res2{res2_data.data(), exclude_ghost(u.get_layout())};
+        fespan res3{res3_data.data(), exclude_ghost(u.get_layout())};
         fespan u_stage{u_stage_data.data(), u.get_layout()};
 
 
@@ -204,17 +206,19 @@ public:
      * @param [in] fespace the finite element space 
      * @param [in] disc the discretization 
      * @param [in/out] u the solution as an fespan view
+     * @param [in] comm the multi-process communicator
      */
     template<int ndim, class disc_class, class LayoutPolicy, class uAccessorPolicy>
-    void solve(FESpace<T, IDX, ndim> &fespace, disc_class &disc, fespan<T, LayoutPolicy, uAccessorPolicy> u) {
+    void solve(FESpace<T, IDX, ndim> &fespace, disc_class &disc, fespan<T, LayoutPolicy, uAccessorPolicy> u,
+            mpi::communicator_type comm = mpi::comm_world) {
 
         // call initial residual to get initial wavespeeds for dt 
         {
             // create view of the residual using the same Layout as u 
-            fespan res{res_data.data(), u.get_layout()};
+            fespan res{res_data.data(), exclude_ghost(u.get_layout())};
 
             // get the rhs
-            form_residual(fespace, disc, u, res);
+            form_residual(fespace, disc, u, res, comm);
         }
 
         // visualization callback on initial state (0 % anything == 0) 
@@ -222,7 +226,7 @@ public:
 
         // timestep loop
         while(!stop_condition(itime, time)){
-            step(fespace, disc, u);
+            step(fespace, disc, u, comm);
             if(itime % ivis == 0){
                 vis_callback(*this);
             }

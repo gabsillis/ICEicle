@@ -13,7 +13,6 @@
 #include "iceicle/geometry/transformations_table.hpp"
 #include "iceicle/geometry/hypercube_face.hpp"
 #include "iceicle/geometry/simplex_element.hpp"
-#include "iceicle/iceicle_mpi_utils.hpp"
 #include "iceicle/tmp_utils.hpp"
 #include "iceicle/transformations/HypercubeTransformations.hpp"
 #include <iceicle/geometry/face.hpp>
@@ -26,7 +25,7 @@
 #include <type_traits>
 #include <memory>
 #include <list>
-#include <set>
+#include <iceicle/basis/dof_mapping.hpp>
 #ifndef NDEBUG
 #include <iomanip>
 #endif
@@ -36,14 +35,14 @@ namespace iceicle {
     /// elsup -> elements surrounding points
     /// @param conn_el the element connectivity matrix
     /// @param nnode the number of nodes
-    template<class IDX>
+    template<class IDX, int ndim>
     constexpr
-    auto to_elsup(util::crs<IDX, IDX>& conn_el, std::integral auto nnode)
+    auto to_elsup(dof_map<IDX, ndim, h1_conformity(ndim)>& conn_el)
     -> util::crs<IDX, IDX>
     {
-        std::vector<std::vector<IDX>> elsup_ragged(nnode);
-        for(IDX iel = 0; iel < conn_el.nrow(); ++iel){
-            for(IDX inode : conn_el.rowspan(iel)){
+        std::vector<std::vector<IDX>> elsup_ragged(conn_el.size());
+        for(IDX iel = 0; iel < conn_el.nelem(); ++iel){
+            for(const IDX inode : conn_el.rowspan(iel)){
                 elsup_ragged[inode].push_back(iel);
             }
         }
@@ -121,9 +120,19 @@ namespace iceicle {
     template<class T, class IDX, int ndim>
     struct CommElementInfo {
         using Point = MATH::GEOMETRY::Point<T, ndim>;
+
+        /// @brief the element transformation
         ElementTransformation<T, IDX, ndim> *trans;
+
+        /// @brief the element node connectivity using 
+        /// node indices local to this process
         std::vector<IDX> conn_el;
+
+        /// @brief the element coordinates array
         std::vector<Point> coord_el;
+
+        /// @brief the parallel index of the element
+        IDX pidx;
     };
 
     /// @brief node indices for a face and the connected elements. 
@@ -256,15 +265,22 @@ namespace iceicle {
         for(int idim = 0; idim < ndim; ++idim, ++it_xmin, ++it_xmax, ++it_nelem){
             T pt_min = *it_xmin;
             std::size_t nelem_dir = *it_nelem;
-            T dx = (*it_xmax - *it_xmin) / (nelem_dir * order);
-            std::vector<T> nodes_dir(nelem_dir + 1);
+            std::size_t nnode_dir = nelem_dir * order + 1;
+            T dx = (*it_xmax - *it_xmin) / (nnode_dir - 1);
+            std::vector<T> nodes_dir(nnode_dir);
             nodes_dir[0] = pt_min;
-            for(std::size_t i = 0; i < nelem_dir; ++i){
-                nodes_dir[i + 1] = nodes_dir[i] + dx;
+            for(std::size_t i = 1; i < nnode_dir; ++i){
+                nodes_dir[i] = nodes_dir[i - 1] + dx;
             }
             nodes_1d[idim] = nodes_dir;
         }
         return nodes_1d;
+    }
+
+    namespace impl {
+
+        template<class T, class IDX, int ndim>
+        static std::vector< std::unique_ptr< Face<T, IDX, ndim> > > empty_premade_faces{};
     }
 
     /**
@@ -291,8 +307,8 @@ namespace iceicle {
         /// The node coordinates
         NodeArray<T, ndim> coord;
 
-        /// Connectivity array for the elements
-        util::crs<IDX, IDX> conn_el;
+        /// Connectivity array for the elements to the nodes
+        dof_map<IDX, ndim, h1_conformity(ndim)> conn_el;
 
         /// The node coordinates for each element 
         /// NOTE: updates to coord must be propogated to this array
@@ -327,17 +343,15 @@ namespace iceicle {
         /// facsuel[iel, 1] = ifac
         util::crs<IDX, IDX> facsuel;
 
-        /// For each process i store a list of (this-local) element indices 
-        /// that need to be sent 
-        std::vector<std::vector<IDX>> el_send_list;
+        // ============================
+        // = Parallel Data Structures =
+        // ============================
 
-        /// For each process i store a list of (i-local) element indices 
-        /// that need to be recieved
-        std::vector<std::vector<IDX>> el_recv_list;
+        /// @brief The parallel partitioning of elements
+        pindex_map<IDX> element_partitioning;
 
-        std::vector< std::vector< CommElementInfo<T, IDX, ndim> > > communicated_elements;
-
-        inline IDX nelem() { return conn_el.nrow(); }
+        /// @brief the parallel partitioning of the nodes
+        pindex_map<IDX> node_partitioning;
 
         // ===============
         // = Constructor =
@@ -346,8 +360,10 @@ namespace iceicle {
         /** @brief construct an empty mesh */
         AbstractMesh() 
         : coord{}, conn_el{}, coord_els{}, el_transformations{}, faces{}, interiorFaceStart(0), interiorFaceEnd(0), 
-          bdyFaceStart(0), bdyFaceEnd(0), elsup{}, facsuel{}, el_send_list(mpi::mpi_world_size()), 
-          el_recv_list(mpi::mpi_world_size()), communicated_elements(mpi::mpi_world_size()){}
+          bdyFaceStart(0), bdyFaceEnd(0), elsup{}, facsuel{}, 
+          element_partitioning{pindex_map<IDX>::create_serial(0)}, 
+          node_partitioning{pindex_map<IDX>::create_serial(0)} 
+        {}
 
         /// @brief A description of a boundary face 
         /// contains all the information needed to generate the face data structure 
@@ -358,23 +374,36 @@ namespace iceicle {
 
         /// @brief Construct a mesh from provided connectivity information
         /// @param coord the mesh coordinates 
-        /// @param conn_el compressed row storage of element connectivity
+        /// @param conn_el_arg compressed row storage of element connectivity
         /// @param el_transformations array of pointers to the corresponding transformation for each element
         /// @param boundary_face_descriptions tuple of BOUNDARY_CONDITIONS (type), integer (flag), 
         ///        and array of indices (the nodes) that describe boundary faces
+        /// @param element_partitioning the parallel partitioning of the elements 
+        /// @param node_partitioning the parallel partitioning of the nodal dofs
+        /// @param premade_boundary_faces optionally the user can construct faces manually (using new) 
+        ///                               and pass a vector of these pointers to be used in addition to 
+        ///                               boundary_face_descriptions
         AbstractMesh(
             NodeArray<T, ndim>& coord,
-            util::crs<IDX, IDX> conn_el,
+            auto&& conn_el_arg,
             std::vector< ElementTransformation<T, IDX, ndim>* > el_transformations,
-            std::vector<boundary_face_desc> boundary_face_descriptions
-        ) : coord{coord}, conn_el{conn_el}, coord_els{}, el_transformations{el_transformations},
-            el_send_list(mpi::mpi_world_size()), el_recv_list(mpi::mpi_world_size()),
-         communicated_elements(mpi::mpi_world_size())
+            const std::vector<boundary_face_desc>& boundary_face_descriptions,
+            pindex_map<IDX> element_partitioning,
+            pindex_map<IDX> node_partitioning,
+            std::vector< std::unique_ptr<Face<T, IDX, ndim> > >& premade_boundary_faces
+                = impl::empty_premade_faces<T, IDX, ndim>
+        )
+        requires std::constructible_from<
+            dof_map<IDX, ndim, h1_conformity(ndim)>, decltype(conn_el_arg)>
+        : coord{coord}, conn_el{conn_el_arg}, coord_els{},
+            el_transformations{el_transformations}, element_partitioning{element_partitioning},
+            node_partitioning{node_partitioning}
         {
             { // build the element coordinates matrix
-                coord_els = util::crs<Point, IDX>{std::span{conn_el.cols(), conn_el.cols() + conn_el.nrow() + 1}};
-                for(IDX iel = 0; iel < conn_el.nrow(); ++iel){
-                    for(std::size_t icol = 0; icol < conn_el.rowsize(iel); ++icol){
+                coord_els = util::crs<Point, IDX>{std::span{conn_el.dof_connectivity.cols(),
+                    conn_el.dof_connectivity.cols() + conn_el.dof_connectivity.nrow() + 1}};
+                for(IDX iel = 0; iel < conn_el.nelem(); ++iel){
+                    for(std::size_t icol = 0; icol < conn_el.ndof_el(iel); ++icol){
                         coord_els[iel, icol] = coord[conn_el[iel, icol]];
                     }
                 }
@@ -401,19 +430,23 @@ namespace iceicle {
 
             // find the interior faces
             // if elements share at least ndim points, then they have a face
-            for(IDX ielem = 0; ielem < nelem(); ++ielem){
+            for(IDX ielem = 0; ielem < nelem_owned(); ++ielem){
                 int max_faces = el_transformations[ielem]->nfac;
                 std::vector<IDX> connected_elements;
                 connected_elements.reserve(max_faces);
 
                 // loop through elements that share a node
                 for(IDX inode : conn_el.rowspan(ielem)){
-                    for(auto jelem_iter = std::lower_bound(elsup.rowspan(inode).begin(), elsup.rowspan(inode).end(), ielem);
+                    for(auto jelem_iter = std::lower_bound(elsup.rowspan(inode).begin(),
+                                elsup.rowspan(inode).end(), ielem);
                             jelem_iter != elsup.rowspan(inode).end(); ++jelem_iter){
                         IDX jelem = *jelem_iter;
 
                         // skip the cases that would lead to duplicate or boundary faces
-                        if( ielem == jelem || std::ranges::find(connected_elements, jelem) != std::ranges::end(connected_elements) )
+                        if( jelem >= nelem_owned()
+                            || ielem == jelem 
+                            || std::ranges::find(connected_elements, jelem) 
+                                != std::ranges::end(connected_elements))
                             continue; 
 
                         // try making the face that is the intersection of the two elements
@@ -435,26 +468,36 @@ namespace iceicle {
             bdyFaceStart = interiorFaceEnd;
 
             // make the boundary faces
-            for(boundary_face_desc& info : boundary_face_descriptions){
+            for(const boundary_face_desc& info : boundary_face_descriptions){
                 auto [bc_type, bc_flag, boundary_nodes] = info;
                 // search the elements around the first node 
                 for(IDX ielem : elsup.rowspan(boundary_nodes[0])){
-                    ElementTransformation<T, IDX, ndim>* trans = el_transformations[ielem];
-                    std::span<IDX> elnodes = get_el_nodes(ielem);
-                    auto fac_info_optional = boundary_face_info(boundary_nodes, trans, elnodes);
-                    if(fac_info_optional){
-                        // make the face and add it
-                        auto [fac_domain, face_nr] = fac_info_optional.value();
-                        std::vector<IDX> face_nodes = trans->get_face_nodes(face_nr, elnodes);
-                        auto fac_opt = make_face<T, IDX, ndim>(fac_domain, trans->domain_type, trans->domain_type, 
-                            trans->order, ielem, ielem, face_nodes, face_nr, 0, 0, bc_type, bc_flag);
-                        if(fac_opt)
-                            faces.push_back(std::move(fac_opt.value()));
-                        else 
-                            util::AnomalyLog::log_anomaly(util::Anomaly{"Cannot form boundary face", util::general_anomaly_tag{}});
+                    // make sure the element isn't a ghost element
+                    if(ielem < element_partitioning.owned_range_size(mpi::mpi_world_rank())){
+                        ElementTransformation<T, IDX, ndim>* trans = el_transformations[ielem];
+                        std::span<IDX> elnodes = get_el_nodes(ielem);
+                        auto fac_info_optional = boundary_face_info(boundary_nodes, trans, elnodes);
+                        if(fac_info_optional){
+                            // make the face and add it
+                            auto [fac_domain, face_nr] = fac_info_optional.value();
+                            std::vector<IDX> face_nodes = trans->get_face_nodes(face_nr, elnodes);
+                            auto fac_opt = make_face<T, IDX, ndim>(fac_domain, trans->domain_type, trans->domain_type, 
+                                trans->order, ielem, ielem, face_nodes, face_nr, 0, 0, bc_type, bc_flag);
+                            if(fac_opt)
+                                faces.push_back(std::move(fac_opt.value()));
+                            else 
+                                util::AnomalyLog::log_anomaly("Cannot form boundary face");
+                        }
                     }
                 }
             }
+
+            // custom boundary face definitions
+            for(auto&& fac : premade_boundary_faces){
+                faces.push_back(std::move(fac));
+            }
+            premade_boundary_faces.clear(); // make sure the empty unique_ptrs dont cause any issues later
+
             bdyFaceEnd = faces.size();
 
             // faces surrounding elements
@@ -467,24 +510,54 @@ namespace iceicle {
                 facsuel_ragged[faces[ifac]->elemR][faces[ifac]->face_nr_r()] = ifac;
             }
             for(IDX ifac = bdyFaceStart; ifac < bdyFaceEnd; ++ifac) {
-                facsuel_ragged[faces[ifac]->elemL][faces[ifac]->face_nr_l()] = ifac;
+                if(faces[ifac]->bctype == BOUNDARY_CONDITIONS::PARALLEL_COM){
+                    auto [rank_other, imleft] = decode_mpi_bcflag(faces[ifac]->bcflag);
+                    if(imleft)
+                        facsuel_ragged[faces[ifac]->elemL][faces[ifac]->face_nr_l()] = ifac;
+                    else
+                        facsuel_ragged[faces[ifac]->elemR][faces[ifac]->face_nr_r()] = ifac;
+                } else {
+                    facsuel_ragged[faces[ifac]->elemL][faces[ifac]->face_nr_l()] = ifac;
+                }
             }
             facsuel = util::crs<IDX, IDX>{facsuel_ragged};
+
         }
+
+        /// @brief Construct a mesh from provided connectivity information
+        /// NOTE: this constructor provides no parallel connectivity and assumes serial 
+        ///
+        /// @param coord the mesh coordinates 
+        /// @param conn_el_arg compressed row storage of element connectivity
+        /// @param el_transformations array of pointers to the corresponding transformation for each element
+        /// @param boundary_face_descriptions tuple of BOUNDARY_CONDITIONS (type), integer (flag), 
+        ///        and array of indices (the nodes) that describe boundary faces
+        AbstractMesh(
+            NodeArray<T, ndim>& coord,
+            const util::crs<IDX, IDX>& conn_el_arg,
+            std::vector< ElementTransformation<T, IDX, ndim>* > el_transformations,
+            const std::vector<boundary_face_desc>& boundary_face_descriptions
+        ) : AbstractMesh<T, IDX, ndim>(coord,
+                dof_map<IDX, ndim, h1_conformity(ndim)>{coord.size(), conn_el_arg},
+                el_transformations, boundary_face_descriptions,
+                pindex_map<IDX>::create_serial(conn_el_arg.nrow()),
+                pindex_map<IDX>::create_serial(coord.size())
+            ) {}
 
         AbstractMesh(const AbstractMesh<T, IDX, ndim>& other) 
         : coord{other.coord}, conn_el{other.conn_el}, coord_els{other.coord_els}, 
           el_transformations{other.el_transformations}, faces{},
           interiorFaceStart(other.interiorFaceStart), interiorFaceEnd(other.interiorFaceEnd),
           bdyFaceStart(other.bdyFaceStart), bdyFaceEnd(other.bdyFaceEnd), elsup{other.elsup},
-          facsuel{other.facsuel},
-          el_send_list(other.el_send_list), el_recv_list(other.el_recv_list),
-          communicated_elements(other.communicated_elements)
+          facsuel{other.facsuel}, element_partitioning{other.element_partitioning},
+          node_partitioning{other.node_partitioning}
         {
             for(auto& facptr : other.faces){
                 faces.push_back(std::move(facptr->clone()));
             }
         }
+
+        AbstractMesh(AbstractMesh<T, IDX, ndim>&& other) = default;
 
         AbstractMesh<T, IDX, ndim>& operator=(const AbstractMesh<T, IDX, ndim>& other){
             if(this != &other){
@@ -503,16 +576,13 @@ namespace iceicle {
                 bdyFaceEnd = other.bdyFaceEnd;
                 elsup = other.elsup;
                 facsuel = other.facsuel;
-                el_send_list = other.el_send_list;
-                el_recv_list = other.el_recv_list;
-                communicated_elements = other.communicated_elements;
+                element_partitioning = other.element_partitioning;
+                node_partitioning = other.node_partitioning;
             }
             return *this;
         }
 
-        AbstractMesh(std::size_t nnode) 
-        : coord{nnode}, conn_el{}, coord_els{}, faces{}, interiorFaceStart(0), interiorFaceEnd(0), 
-          bdyFaceStart(0), bdyFaceEnd(0) {}
+        AbstractMesh<T, IDX, ndim>& operator=(AbstractMesh<T, IDX, ndim>&& other) = default;
 
         private:
 
@@ -562,13 +632,12 @@ namespace iceicle {
         ) requires(
             std::same_as<std::ranges::range_value_t<R_bctype>, BOUNDARY_CONDITIONS> &&
             std::convertible_to<std::ranges::range_value_t<R_bcflags>, int>
-        ) : coord{}, conn_el{}, coord_els{}, faces{}, el_send_list(mpi::mpi_world_size()), 
-          el_recv_list(mpi::mpi_world_size()), communicated_elements(mpi::mpi_world_size()) 
+        ) : coord{}, conn_el{}, coord_els{}, faces{}
         {
             using namespace NUMTOOL::TENSOR::FIXED_SIZE;
             std::array<IDX, ndim> directional_nelem;
             for(int idim = 0; idim < ndim; ++idim){
-                directional_nelem[idim] = nodes_1d[idim].size() - 1;
+                directional_nelem[idim] = (nodes_1d[idim].size() - 1) / order;
             }
 
             // determine the number of nodes to generate
@@ -581,7 +650,7 @@ namespace iceicle {
             for(int idim = 0; idim < ndim; ++idim) {
                 stride_nodes[idim] = 1;
                 stride[idim] = 1;
-                nnode_dir[idim] = directional_nelem[idim] * (order) + 1;
+                nnode_dir[idim] = nodes_1d[idim].size();
                 nnodes *= nnode_dir[idim];
                 nelem *= directional_nelem[idim];
             }
@@ -593,6 +662,9 @@ namespace iceicle {
                 }
             }
             coord.resize(nnodes);
+
+            element_partitioning = pindex_map<IDX>::create_serial(nelem);
+            node_partitioning = pindex_map<IDX>::create_serial(nnodes);
 
             // Generate the nodes 
             std::array<IDX, ndim> ijk;
@@ -661,11 +733,15 @@ namespace iceicle {
                         }
                     }
 
-                    conn_el = util::crs<IDX, IDX>{ragged_conn_el};
+                    conn_el = dof_map<IDX, ndim, h1_conformity(ndim)>{
+                        nnodes, util::crs<IDX, IDX>{ragged_conn_el}};
                     { // build the element coordinates matrix
-                        coord_els = util::crs<Point, IDX>{std::span{conn_el.cols(), conn_el.cols() + conn_el.nrow() + 1}};
+                        coord_els = util::crs<Point, IDX>{
+                            std::span{conn_el.dof_connectivity.cols(),
+                                conn_el.dof_connectivity.cols() 
+                                    + conn_el.dof_connectivity.nrow() + 1}};
                         for(IDX iel = 0; iel < nelem; ++iel){
-                            for(std::size_t icol = 0; icol < conn_el.rowsize(iel); ++icol){
+                            for(std::size_t icol = 0; icol < conn_el.ndof_el(iel); ++icol){
                                 coord_els[iel, icol] = coord[conn_el[iel, icol]];
                             }
                         }
@@ -895,7 +971,7 @@ namespace iceicle {
             // EXITING ORDER TEMPLATED SECTION
 
             // set up additional connectivity array
-            elsup = to_elsup(conn_el, n_nodes());
+            elsup = to_elsup(conn_el);
 
             // faces surrounding elements
             std::vector<std::vector<IDX>> facsuel_ragged(nelem);
@@ -989,11 +1065,22 @@ namespace iceicle {
         // = Utility =
         // ===========
 
+        /// @brief get the number of elements
+        [[nodiscard]] inline constexpr 
+        auto nelem() const noexcept -> IDX
+        { return conn_el.nelem(); }
+
+        /// @brief get the number of elements owned by this process 
+        [[nodiscard]] inline constexpr 
+        auto nelem_owned() const noexcept 
+        -> IDX 
+        { return element_partitioning.owned_range_size(mpi::mpi_world_rank()); }
+
         /// @brief update the element coordinate data to match the coord array 
         /// by using the element connectivity
         void update_coord_els(){
-            for(IDX i = 0; i < conn_el.nnz(); ++i){
-                IDX inode = conn_el.data()[i];
+            for(IDX i = 0; i < conn_el.dof_connectivity.nnz(); ++i){
+                IDX inode = conn_el.dof_connectivity.data()[i];
                 coord_els.data()[i] = coord[inode];
             }
         }
@@ -1001,7 +1088,7 @@ namespace iceicle {
         /// @brief element coordinate data for all elements affected by the given node
         void update_node(IDX inode) {
             for(IDX iel : elsup.rowspan(inode)){
-                for(int ilocal = 0; ilocal < conn_el.rowsize(iel); ++ilocal){
+                for(int ilocal = 0; ilocal < conn_el.ndof_el(iel); ++ilocal){
                     if(conn_el[iel, ilocal] == inode)
                         coord_els[iel, ilocal] = coord[conn_el[iel, ilocal]];
                 }
@@ -1030,6 +1117,7 @@ namespace iceicle {
                     out << coord[inode][idim] << " ";
                 out << "}" << std::endl;
             }
+            out << std::flush;
         }
 
         void printElements(std::ostream &out){
@@ -1041,6 +1129,7 @@ namespace iceicle {
                 }
                 out << "}\n";
             }
+            out << std::flush;
         }
 
         void printFaces(std::ostream &out){
@@ -1075,6 +1164,7 @@ namespace iceicle {
                 out << "bctype: " << bc_name(fac.bctype) << " | bcflag: " << fac.bcflag << std::endl;
                 out << "-------------------------\n";
            }
+           out << std::flush;
         }
 
         ~AbstractMesh() = default;
