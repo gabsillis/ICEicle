@@ -245,7 +245,6 @@ TEST(test_polytope, test_extrusion_parities) {
 // }
 //
 TEST(test_polytope, test_n_facets){
-
     // Vertices
     ASSERT_EQ(n_facets<0>(segment_t), 2);
     ASSERT_EQ(n_facets<0>(segmentb_t), 2);
@@ -309,7 +308,370 @@ TEST(test_polytope, test_n_facets){
     ASSERT_EQ(n_facets<3>(pyra_b_t), 1);
     ASSERT_EQ(n_facets<3>(hexa_a_t), 1);
     ASSERT_EQ(n_facets<3>(hexa_b_t), 1);
-
 }
->>>>>>> 5db9244 (n_facets)
+
+TEST(test_polytope, test_facet_definitions){
+
+    // ===========
+    // = Segment =
+    // ===========
+    {
+        // vertices
+        std::vector<facet<0>> vertices = get_facets<0>(segment_t);
+        ASSERT_EQ(vertices.size(), 2);
+        ASSERT_EQ(vertices[0].t, tcode<0>{});
+        ASSERT_EQ(vertices[0].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[0].vertex_indices[0], 0);
+        ASSERT_EQ(vertices[1].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[1].vertex_indices[0], 1);
+
+        // lines
+        std::vector<facet<1>> lines = get_facets<1>(segment_t);
+        ASSERT_EQ(lines.size(), 1);
+        ASSERT_EQ(lines[0].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[0].vertex_indices, (std::vector<std::size_t>{0, 1}));
+
+        // surfaces
+        std::vector<facet<2>> surfaces = get_facets<2>(segment_t);
+        ASSERT_EQ(surfaces.size(), 0);
+
+        // volumes 
+        std::vector<facet<3>> volumes = get_facets<3>(segment_t);
+        ASSERT_EQ(volumes.size(), 0);
+    }
+    {
+        // vertices
+        std::vector<facet<0>> vertices = get_facets<0>(segmentb_t);
+        ASSERT_EQ(vertices.size(), 2);
+        ASSERT_EQ(vertices[0].t, tcode<0>{});
+        ASSERT_EQ(vertices[0].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[0].vertex_indices[0], 0);
+        ASSERT_EQ(vertices[1].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[1].vertex_indices[0], 1);
+
+        // lines
+        std::vector<facet<1>> lines = get_facets<1>(segmentb_t);
+        ASSERT_EQ(lines.size(), 1);
+        ASSERT_EQ(lines[0].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[0].vertex_indices, (std::vector<std::size_t>{0, 1}));
+
+        // surfaces
+        std::vector<facet<2>> surfaces = get_facets<2>(segmentb_t);
+        ASSERT_EQ(surfaces.size(), 0);
+
+        // volumes 
+        std::vector<facet<3>> volumes = get_facets<3>(segmentb_t);
+        ASSERT_EQ(volumes.size(), 0);
+    }
+
+    // ============
+    // = Triangle =
+    // ============
+    {
+        // vertices
+        std::vector<facet<0>> vertices = get_facets<0>(tri_a_t);
+        ASSERT_EQ(vertices.size(), 3);
+        ASSERT_EQ(vertices[0].t, tcode<0>{});
+        ASSERT_EQ(vertices[0].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[0].vertex_indices, std::vector<std::size_t>{0});
+        ASSERT_EQ(vertices[1].t, tcode<0>{});
+        ASSERT_EQ(vertices[1].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[1].vertex_indices, std::vector<std::size_t>{1});
+        ASSERT_EQ(vertices[2].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[2].vertex_indices, std::vector<std::size_t>{2});
+
+        // lines
+        std::vector<facet<1>> lines = get_facets<1>(tri_a_t);
+        ASSERT_EQ(lines.size(), 3);
+        ASSERT_EQ(lines[0].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[0].vertex_indices, (std::vector<std::size_t>{0, 1}));
+        ASSERT_EQ(lines[1].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[1].vertex_indices, (std::vector<std::size_t>{0, 2}));
+        ASSERT_EQ(lines[2].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[2].vertex_indices, (std::vector<std::size_t>{1, 2}));
+
+        // surfaces
+        std::vector<facet<2>> surfaces = get_facets<2>(tri_a_t);
+        ASSERT_EQ(surfaces.size(), 1);
+        ASSERT_EQ(surfaces[0].t, tcode<2>{"00"});
+        ASSERT_EQ(surfaces[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2}));
+
+        // volumes 
+        std::vector<facet<3>> volumes = get_facets<3>(tri_a_t);
+        ASSERT_EQ(volumes.size(), 0);
+    }
+    {
+        // vertices
+        std::vector<facet<0>> vertices = get_facets<0>(tri_b_t);
+        ASSERT_EQ(vertices.size(), 3);
+        ASSERT_EQ(vertices[0].t, tcode<0>{});
+        ASSERT_EQ(vertices[0].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[0].vertex_indices, std::vector<std::size_t>{0});
+        ASSERT_EQ(vertices[1].t, tcode<0>{});
+        ASSERT_EQ(vertices[1].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[1].vertex_indices, std::vector<std::size_t>{1});
+        ASSERT_EQ(vertices[2].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[2].vertex_indices, std::vector<std::size_t>{2});
+
+        // lines
+        std::vector<facet<1>> lines = get_facets<1>(tri_b_t);
+        ASSERT_EQ(lines.size(), 3);
+        ASSERT_EQ(lines[0].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[0].vertex_indices, (std::vector<std::size_t>{0, 1}));
+        ASSERT_EQ(lines[1].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[1].vertex_indices, (std::vector<std::size_t>{0, 2}));
+        ASSERT_EQ(lines[2].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[2].vertex_indices, (std::vector<std::size_t>{1, 2}));
+
+        // surfaces
+        std::vector<facet<2>> surfaces = get_facets<2>(tri_b_t);
+        ASSERT_EQ(surfaces.size(), 1);
+        ASSERT_EQ(surfaces[0].t, tcode<2>{"01"});
+        ASSERT_EQ(surfaces[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2}));
+
+        // volumes 
+        std::vector<facet<3>> volumes = get_facets<3>(tri_b_t);
+        ASSERT_EQ(volumes.size(), 0);
+    }
+    // ========
+    // = Quad =
+    // ========
+    {
+        // vertices
+        std::vector<facet<0>> vertices = get_facets<0>(quad_a_t);
+        ASSERT_EQ(vertices.size(), 4);
+        ASSERT_EQ(vertices[0].t, tcode<0>{});
+        ASSERT_EQ(vertices[0].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[0].vertex_indices, std::vector<std::size_t>{0});
+        ASSERT_EQ(vertices[1].t, tcode<0>{});
+        ASSERT_EQ(vertices[1].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[1].vertex_indices, std::vector<std::size_t>{1});
+        ASSERT_EQ(vertices[2].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[2].vertex_indices, std::vector<std::size_t>{2});
+        ASSERT_EQ(vertices[3].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[3].vertex_indices, std::vector<std::size_t>{3});
+
+        // lines
+        std::vector<facet<1>> lines = get_facets<1>(quad_a_t);
+        ASSERT_EQ(lines.size(), 4);
+        ASSERT_EQ(lines[0].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[0].vertex_indices, (std::vector<std::size_t>{0, 1}));
+        ASSERT_EQ(lines[1].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[1].vertex_indices, (std::vector<std::size_t>{2, 3}));
+        ASSERT_EQ(lines[2].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[2].vertex_indices, (std::vector<std::size_t>{0, 2}));
+        ASSERT_EQ(lines[3].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[3].vertex_indices, (std::vector<std::size_t>{1, 3}));
+
+        // surfaces
+        std::vector<facet<2>> surfaces = get_facets<2>(quad_a_t);
+        ASSERT_EQ(surfaces.size(), 1);
+        ASSERT_EQ(surfaces[0].t, tcode<2>{"10"});
+        ASSERT_EQ(surfaces[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2, 3}));
+
+        // volumes 
+        std::vector<facet<3>> volumes = get_facets<3>(quad_a_t);
+        ASSERT_EQ(volumes.size(), 0);
+    }
+    {
+        // vertices
+        std::vector<facet<0>> vertices = get_facets<0>(quad_b_t);
+        ASSERT_EQ(vertices.size(), 4);
+        ASSERT_EQ(vertices[0].t, tcode<0>{});
+        ASSERT_EQ(vertices[0].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[0].vertex_indices, std::vector<std::size_t>{0});
+        ASSERT_EQ(vertices[1].t, tcode<0>{});
+        ASSERT_EQ(vertices[1].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[1].vertex_indices, std::vector<std::size_t>{1});
+        ASSERT_EQ(vertices[2].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[2].vertex_indices, std::vector<std::size_t>{2});
+        ASSERT_EQ(vertices[3].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[3].vertex_indices, std::vector<std::size_t>{3});
+
+        // lines
+        std::vector<facet<1>> lines = get_facets<1>(quad_b_t);
+        ASSERT_EQ(lines.size(), 4);
+        ASSERT_EQ(lines[0].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[0].vertex_indices, (std::vector<std::size_t>{0, 1}));
+        ASSERT_EQ(lines[1].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[1].vertex_indices, (std::vector<std::size_t>{2, 3}));
+        ASSERT_EQ(lines[2].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[2].vertex_indices, (std::vector<std::size_t>{0, 2}));
+        ASSERT_EQ(lines[3].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[3].vertex_indices, (std::vector<std::size_t>{1, 3}));
+
+        // surfaces
+        std::vector<facet<2>> surfaces = get_facets<2>(quad_b_t);
+        ASSERT_EQ(surfaces.size(), 1);
+        ASSERT_EQ(surfaces[0].t, tcode<2>{"11"});
+        ASSERT_EQ(surfaces[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2, 3}));
+
+        // volumes 
+        std::vector<facet<3>> volumes = get_facets<3>(quad_b_t);
+        ASSERT_EQ(volumes.size(), 0);
+    }
+
+    // =======
+    // = Tet =
+    // =======
+    {
+        // vertices
+        std::vector<facet<0>> vertices = get_facets<0>(tet_a_t);
+        ASSERT_EQ(vertices.size(), 4);
+        ASSERT_EQ(vertices[0].t, tcode<0>{});
+        ASSERT_EQ(vertices[0].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[0].vertex_indices, std::vector<std::size_t>{0});
+        ASSERT_EQ(vertices[1].t, tcode<0>{});
+        ASSERT_EQ(vertices[1].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[1].vertex_indices, std::vector<std::size_t>{1});
+        ASSERT_EQ(vertices[2].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[2].vertex_indices, std::vector<std::size_t>{2});
+        ASSERT_EQ(vertices[3].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[3].vertex_indices, std::vector<std::size_t>{3});
+
+        // lines
+        std::vector<facet<1>> lines = get_facets<1>(tet_a_t);
+        ASSERT_EQ(lines.size(), 6);
+        ASSERT_EQ(lines[0].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[0].vertex_indices, (std::vector<std::size_t>{0, 1}));
+        ASSERT_EQ(lines[1].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[1].vertex_indices, (std::vector<std::size_t>{0, 2}));
+        ASSERT_EQ(lines[2].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[2].vertex_indices, (std::vector<std::size_t>{1, 2}));
+        ASSERT_EQ(lines[3].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[3].vertex_indices, (std::vector<std::size_t>{0, 3}));
+        ASSERT_EQ(lines[4].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[4].vertex_indices, (std::vector<std::size_t>{1, 3}));
+        ASSERT_EQ(lines[5].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[5].vertex_indices, (std::vector<std::size_t>{2, 3}));
+
+        // surfaces
+        std::vector<facet<2>> surfaces = get_facets<2>(tet_a_t);
+        ASSERT_EQ(surfaces.size(), 4);
+        ASSERT_EQ(surfaces[0].t, tcode<2>{"00"});
+        ASSERT_EQ(surfaces[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2}));
+        ASSERT_EQ(surfaces[1].t, tcode<2>{"00"});
+        ASSERT_EQ(surfaces[1].vertex_indices, (std::vector<std::size_t>{0, 1, 3}));
+        ASSERT_EQ(surfaces[2].t, tcode<2>{"00"});
+        ASSERT_EQ(surfaces[2].vertex_indices, (std::vector<std::size_t>{0, 2, 3}));
+        ASSERT_EQ(surfaces[3].t, tcode<2>{"00"});
+        ASSERT_EQ(surfaces[3].vertex_indices, (std::vector<std::size_t>{1, 2, 3}));
+
+        // volumes 
+        std::vector<facet<3>> volumes = get_facets<3>(tet_a_t);
+        ASSERT_EQ(volumes.size(), 1);
+        ASSERT_EQ(volumes[0].t, tcode<3>{"000"});
+        ASSERT_EQ(volumes[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2, 3}));
+    }
+    {
+        // vertices
+        std::vector<facet<0>> vertices = get_facets<0>(tet_b_t);
+        ASSERT_EQ(vertices.size(), 4);
+        ASSERT_EQ(vertices[0].t, tcode<0>{});
+        ASSERT_EQ(vertices[0].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[0].vertex_indices, std::vector<std::size_t>{0});
+        ASSERT_EQ(vertices[1].t, tcode<0>{});
+        ASSERT_EQ(vertices[1].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[1].vertex_indices, std::vector<std::size_t>{1});
+        ASSERT_EQ(vertices[2].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[2].vertex_indices, std::vector<std::size_t>{2});
+        ASSERT_EQ(vertices[3].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[3].vertex_indices, std::vector<std::size_t>{3});
+
+        // lines
+        std::vector<facet<1>> lines = get_facets<1>(tet_b_t);
+        ASSERT_EQ(lines.size(), 6);
+        ASSERT_EQ(lines[0].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[0].vertex_indices, (std::vector<std::size_t>{0, 1}));
+        ASSERT_EQ(lines[1].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[1].vertex_indices, (std::vector<std::size_t>{0, 2}));
+        ASSERT_EQ(lines[2].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[2].vertex_indices, (std::vector<std::size_t>{1, 2}));
+        ASSERT_EQ(lines[3].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[3].vertex_indices, (std::vector<std::size_t>{0, 3}));
+        ASSERT_EQ(lines[4].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[4].vertex_indices, (std::vector<std::size_t>{1, 3}));
+        ASSERT_EQ(lines[5].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[5].vertex_indices, (std::vector<std::size_t>{2, 3}));
+
+        // surfaces
+        std::vector<facet<2>> surfaces = get_facets<2>(tet_b_t);
+        ASSERT_EQ(surfaces.size(), 4);
+        ASSERT_EQ(surfaces[0].t, tcode<2>{"01"});
+        ASSERT_EQ(surfaces[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2}));
+        ASSERT_EQ(surfaces[1].t, tcode<2>{"01"});
+        ASSERT_EQ(surfaces[1].vertex_indices, (std::vector<std::size_t>{0, 1, 3}));
+        ASSERT_EQ(surfaces[2].t, tcode<2>{"00"});
+        ASSERT_EQ(surfaces[2].vertex_indices, (std::vector<std::size_t>{0, 2, 3}));
+        ASSERT_EQ(surfaces[3].t, tcode<2>{"00"});
+        ASSERT_EQ(surfaces[3].vertex_indices, (std::vector<std::size_t>{1, 2, 3}));
+
+        // volumes 
+        std::vector<facet<3>> volumes = get_facets<3>(tet_b_t);
+        ASSERT_EQ(volumes.size(), 1);
+        ASSERT_EQ(volumes[0].t, tcode<3>{"001"});
+        ASSERT_EQ(volumes[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2, 3}));
+    }
+
+    // ===========
+    // = Pyramid =
+    // ===========
+    {
+        // vertices
+        std::vector<facet<0>> vertices = get_facets<0>(pyra_a_t);
+        ASSERT_EQ(vertices.size(), 5);
+        ASSERT_EQ(vertices[0].t, tcode<0>{});
+        ASSERT_EQ(vertices[0].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[0].vertex_indices, std::vector<std::size_t>{0});
+        ASSERT_EQ(vertices[1].t, tcode<0>{});
+        ASSERT_EQ(vertices[1].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[1].vertex_indices, std::vector<std::size_t>{1});
+        ASSERT_EQ(vertices[2].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[2].vertex_indices, std::vector<std::size_t>{2});
+        ASSERT_EQ(vertices[3].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[3].vertex_indices, std::vector<std::size_t>{3});
+        ASSERT_EQ(vertices[4].vertex_indices.size(), 1);
+        ASSERT_EQ(vertices[4].vertex_indices, std::vector<std::size_t>{4});
+
+        // lines
+        std::vector<facet<1>> lines = get_facets<1>(pyra_a_t);
+        ASSERT_EQ(lines.size(), 8);
+        ASSERT_EQ(lines[0].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[0].vertex_indices, (std::vector<std::size_t>{0, 1}));
+        ASSERT_EQ(lines[1].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[1].vertex_indices, (std::vector<std::size_t>{2, 3}));
+        ASSERT_EQ(lines[2].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[2].vertex_indices, (std::vector<std::size_t>{0, 2}));
+        ASSERT_EQ(lines[3].t, tcode<1>{"1"});
+        ASSERT_EQ(lines[3].vertex_indices, (std::vector<std::size_t>{1, 3}));
+        ASSERT_EQ(lines[4].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[4].vertex_indices, (std::vector<std::size_t>{0, 4}));
+        ASSERT_EQ(lines[5].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[5].vertex_indices, (std::vector<std::size_t>{1, 4}));
+        ASSERT_EQ(lines[6].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[6].vertex_indices, (std::vector<std::size_t>{2, 4}));
+        ASSERT_EQ(lines[7].t, tcode<1>{"0"});
+        ASSERT_EQ(lines[7].vertex_indices, (std::vector<std::size_t>{3, 4}));
+
+        // surfaces
+        std::vector<facet<2>> surfaces = get_facets<2>(pyra_a_t);
+        ASSERT_EQ(surfaces.size(), 5);
+        ASSERT_EQ(surfaces[0].t, tcode<2>{"10"});
+        ASSERT_EQ(surfaces[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2, 3}));
+        ASSERT_EQ(surfaces[1].t, tcode<2>{"00"});
+        ASSERT_EQ(surfaces[1].vertex_indices, (std::vector<std::size_t>{0, 1, 4}));
+        ASSERT_EQ(surfaces[2].t, tcode<2>{"00"});
+        ASSERT_EQ(surfaces[2].vertex_indices, (std::vector<std::size_t>{2, 3, 4}));
+        ASSERT_EQ(surfaces[3].t, tcode<2>{"01"});
+        ASSERT_EQ(surfaces[3].vertex_indices, (std::vector<std::size_t>{0, 2, 4}));
+        ASSERT_EQ(surfaces[4].t, tcode<2>{"01"});
+        ASSERT_EQ(surfaces[4].vertex_indices, (std::vector<std::size_t>{1, 3, 4}));
+
+        // volumes 
+        std::vector<facet<3>> volumes = get_facets<3>(pyra_a_t);
+        ASSERT_EQ(volumes.size(), 1);
+        ASSERT_EQ(volumes[0].t, tcode<3>{"010"});
+        ASSERT_EQ(volumes[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2, 3, 4}));
+    }
+}
 

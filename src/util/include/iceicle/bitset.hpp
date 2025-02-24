@@ -46,6 +46,12 @@ namespace iceicle {
 
         public:
 
+        /// @brief access the size statically
+        inline static constexpr 
+        auto static_extent() noexcept
+        -> std::size_t
+        { return nbit; }
+
         /// @brief reference to a specific bit
         class reference {
             friend class bitset;
@@ -387,6 +393,12 @@ namespace iceicle {
         static constexpr data_t full_set_mask = static_cast<data_t>(0) ;
 
         public:
+
+        /// @brief access the size statically
+        inline static constexpr 
+        auto static_extent() noexcept
+        -> std::size_t
+        { return 0; }
 
         /// @brief reference to a specific bit
         class reference {
