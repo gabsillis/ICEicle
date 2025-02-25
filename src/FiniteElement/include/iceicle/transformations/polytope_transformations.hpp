@@ -77,6 +77,9 @@ namespace iceicle {
       get_ndim(code);
     };
 
+    template<geo_code auto c>
+    struct static_geo_code{};
+
     /// @brief get the tcode of the polytope that forms the "base" of an extruded polytope
     /// i.e the bottom square of a pyramid
     template< std::size_t ndim >
@@ -138,6 +141,31 @@ namespace iceicle {
         }
         return nvert;
       }
+    }
+
+    /// @brief get the indices of vertices corresponding to the orientation axis 
+    /// This is (in order)
+    /// - The vertex at the origin 
+    /// - The vertex one unit in the x-direction from the origin 
+    /// - The vertex one unit in the y-direction from the origin 
+    /// - ... 
+    template<std::size_t ndim>
+    [[nodiscard]] inline constexpr 
+    auto orient_axis_vert(tcode<ndim> t) noexcept 
+    -> std::array<std::size_t, ndim + 1>
+    {
+      std::array<std::size_t, ndim + 1> orient_axis;
+      orient_axis[0] = 0;
+      orient_axis[1] = 1;
+      for(std::size_t idim = 1; idim < ndim; ++idim){
+        if(t[idim] == simpl_ext){
+          orient_axis[idim + 1] = orient_axis[idim] + 1;
+        } else {
+          orient_axis[idim + 1] = orient_axis[idim] * 2;
+
+        }
+      }
+      return orient_axis;
     }
 
     template<geo_code auto t>
@@ -211,6 +239,14 @@ namespace iceicle {
       std::vector<std::size_t> vertex_indices;
     };
 
+    /// @brief generate the topology and vertex indices of all of the 
+    /// idim-dimensional facets of the topology t 
+    /// i.e idim = 1 on a hex toploogy will give all the lines
+    /// that comprise that hex
+    ///
+    /// The vertex indices of the facets should be ordered such that 
+    /// the orientation axis of the faces ( ndim-1 facets of a topology )
+    /// generate normal vectors that are outward with respect to the topology
     template< std::size_t idim >
     [[nodiscard]] inline constexpr 
     auto get_facets(geo_code auto t)

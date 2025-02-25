@@ -1,6 +1,8 @@
 #include "gtest/gtest.h"
 #include "iceicle/basis/lagrange_1d.hpp"
 #include "iceicle/transformations/polytope_transformations.hpp"
+#include <Numtool/fixed_size_tensor.hpp>
+#include <fmt/ranges.h>
 
 using namespace iceicle;
 using namespace polytope;
@@ -161,7 +163,7 @@ TEST(test_polytope, test_extrusion_parities) {
 //     {
 //         constexpr tcode<2> tria_t{"00"};
 //         {
-//             constexpr ecode<2> e{"10"};
+//   constexpr ecode<2> e{"10"};
 //             constexpr vcode<2> v{"01"};
 //             ASSERT_EQ(
 //                 (facet_vertices<tria_t, e, v>()),
@@ -673,5 +675,95 @@ TEST(test_polytope, test_facet_definitions){
         ASSERT_EQ(volumes[0].t, tcode<3>{"010"});
         ASSERT_EQ(volumes[0].vertex_indices, (std::vector<std::size_t>{0, 1, 2, 3, 4}));
     }
+}
+
+// Test that all "faces" (ndim - 1) have outwards unit normals
+TEST(test_polytope, test_facet_normal){
+    using namespace NUMTOOL::TENSOR::FIXED_SIZE;
+
+    auto compute_centroid = []<geo_code auto t>(static_geo_code<t>){
+        static constexpr std::size_t ndim = get_ndim(t);
+        Tensor<double, ndim> centroid;
+        centroid = 0.0;
+
+        // contribution from each vertex
+        for(vcode<ndim> v : gen_vert<t>()){
+            for(int idim = 0; idim < ndim; ++idim){
+                if(v[idim] != 0){
+                    centroid[idim] += 1.0;
+                } 
+            }
+        }
+
+        // average
+        for(int idim = 0; idim < ndim; ++idim){
+            centroid[idim] /= n_vert(t);
+        }
+
+        return centroid;
+    };
+
+    auto compute_centroid_verts = []<geo_code auto t>(static_geo_code<t>,
+            std::vector<std::size_t> verts){
+        static constexpr std::size_t ndim = get_ndim(t);
+        auto vert_list = gen_vert<t>();
+        Tensor<double, ndim> centroid;
+        centroid = 0.0;
+        for(std::size_t ivert : verts){
+            vcode<ndim> v = vert_list[ivert];
+            for(int idim = 0; idim < ndim; ++idim){
+                if(v[idim] != 0){
+                    centroid[idim] += 1.0;
+                } 
+            }
+        }
+        // average
+        for(int idim = 0; idim < ndim; ++idim){
+            centroid[idim] /= verts.size();
+        }
+
+        return centroid;
+    };
+
+    auto check_normals = [=]<geo_code auto t>(static_geo_code<t> targ){
+        static constexpr std::size_t ndim = get_ndim(t);
+
+        Tensor<double, ndim> centroid = compute_centroid(targ);
+
+        auto vert_list = gen_vert<t>();
+        std::vector<facet<ndim - 1>> faces = get_facets<ndim - 1>(t);
+        for(facet<ndim - 1> face : faces){
+            Tensor<double, ndim, ndim - 1> axis_vectors;
+            auto axis_nodes = orient_axis_vert(face.t);
+
+            // get distance by subtract origin of orient axis 
+            // and add each endpoint
+            for(int j = 0; j < ndim - 1; ++j){
+                std::size_t axis_v_idx = face.vertex_indices[axis_nodes[j+1]];
+                std::size_t origin_v_idx = face.vertex_indices[axis_nodes[0]];
+                auto axis_v = vert_list[axis_v_idx];
+                auto origin_v = vert_list[origin_v_idx];
+                for(int i = 0; i < ndim; ++i){
+                    double axis_coord = axis_v[i] == 0 ? 0.0 : 1.0;
+                    double origin_coord = origin_v[i] == 0 ? 0.0 : 1.0;
+                    axis_vectors[i][j] = axis_coord - origin_coord;
+                }
+            }
+
+            auto centroid_face = compute_centroid_verts(targ, face.vertex_indices);
+
+            Tensor<double, ndim> normal{calc_ortho(axis_vectors)};
+
+            
+            SCOPED_TRACE("face vertex indices: "
+                    + fmt::format("{}", face.vertex_indices) );
+            SCOPED_TRACE("normal vector: "
+                    + fmt::format("{}", normal) );
+            ASSERT_TRUE(dot(normal, centroid_face - centroid) > 0);
+        }
+    };
+
+    check_normals(static_geo_code<tri_a_t>{});
+
 }
 
